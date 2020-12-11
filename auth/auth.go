@@ -52,7 +52,7 @@ type StorageDataJSON struct {
 func VerifyAPIKey(urlInput, userName, apiKey string) bool {
 	log.Debug("starting VerifyAPIkey request. Testing:", userName)
 	//TODO need to sanitize invalid url strings, esp in custom flag
-	data, _, _ := GetRestAPI("GET", true, urlInput+"/api/system/ping", userName, apiKey, "", nil, 1)
+	data, _, _ := GetRestAPI("GET", true, urlInput+"/api/system/ping", userName, apiKey, "", nil, nil, 1)
 	if string(data) == "OK" {
 		log.Debug("finished VerifyAPIkey request. Credentials are good to go.")
 		return true
@@ -150,14 +150,14 @@ func GetDownloadJSON(fileLocation string, masterKey string) Creds {
 
 //
 func StorageCheck(creds Creds, warning float64, threshold float64) {
-	data, statusCode, _ := GetRestAPI("GET", true, creds.URL+"/api/storageinfo", creds.Username, creds.Apikey, "", nil, 1)
+	data, statusCode, _ := GetRestAPI("GET", true, creds.URL+"/api/storageinfo", creds.Username, creds.Apikey, "", nil, nil, 1)
 	if statusCode != 200 {
 		log.Warn("Received bad status code ", statusCode, " trying to get storage info. Proceed with caution")
 		return
 	}
 	//may need to trigger async calculation for newer versions
 	log.Debug("Triggering async POST to update summary page")
-	GetRestAPI("POST", true, creds.URL+"/api/storageinfo/calculate", creds.Username, creds.Apikey, "", nil, 1)
+	GetRestAPI("POST", true, creds.URL+"/api/storageinfo/calculate", creds.Username, creds.Apikey, "", nil, nil, 1)
 
 	var storageData StorageDataJSON
 	err := json.Unmarshal(data, &storageData)
@@ -186,7 +186,7 @@ func StorageCheck(creds Creds, warning float64, threshold float64) {
 }
 
 //GetRestAPI GET rest APIs response with error handling
-func GetRestAPI(method string, auth bool, urlInput, userName, apiKey, providedfilepath string, header map[string]string, retry int) ([]byte, int, http.Header) {
+func GetRestAPI(method string, auth bool, urlInput, userName, apiKey, providedfilepath string, jsonBody []byte, header map[string]string, retry int) ([]byte, int, http.Header) {
 	if retry > 5 {
 		log.Warn("Exceeded retry limit, cancelling further attempts")
 		return nil, 0, nil
@@ -207,6 +207,8 @@ func GetRestAPI(method string, auth bool, urlInput, userName, apiKey, providedfi
 		io.Copy(part, file)
 		err = writer.Close()
 		helpers.Check(err, false, "writer close", helpers.Trace())
+	} else if method == "PUT" && jsonBody != nil {
+		body = bytes.NewBuffer(jsonBody)
 	}
 
 	client := http.Client{}
@@ -245,12 +247,12 @@ func GetRestAPI(method string, auth bool, urlInput, userName, apiKey, providedfi
 		case 429:
 			log.Error("Received ", resp.StatusCode, " Too Many Requests on ", method, " request for ", urlInput, ", sleeping then retrying, attempt ", retry)
 			time.Sleep(10 * time.Second)
-			GetRestAPI(method, auth, urlInput, userName, apiKey, providedfilepath, header, retry+1)
+			GetRestAPI(method, auth, urlInput, userName, apiKey, providedfilepath, jsonBody, header, retry+1)
 		case 204:
 			if method == "GET" {
 				log.Error("Received ", resp.StatusCode, " No Content on ", method, " request for ", urlInput, ", sleeping then retrying")
 				time.Sleep(10 * time.Second)
-				GetRestAPI(method, auth, urlInput, userName, apiKey, providedfilepath, header, retry+1)
+				GetRestAPI(method, auth, urlInput, userName, apiKey, providedfilepath, jsonBody, header, retry+1)
 			} else {
 				log.Debug("Received ", resp.StatusCode, " OK on ", method, " request for ", urlInput, " continuing")
 			}
@@ -282,7 +284,7 @@ func GetRestAPI(method string, auth bool, urlInput, userName, apiKey, providedfi
 				log.Warn("Data Read on ", urlInput, " failed with:", err, ", sleeping then retrying, attempt:", retry)
 				time.Sleep(10 * time.Second)
 
-				GetRestAPI(method, auth, urlInput, userName, apiKey, providedfilepath, header, retry+1)
+				GetRestAPI(method, auth, urlInput, userName, apiKey, providedfilepath, jsonBody, header, retry+1)
 			}
 
 			return data, statusCode, headers

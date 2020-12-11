@@ -1,2 +1,13 @@
 # security-json-import
 Importing in the security.json
+
+This tool attempts to recreate, as close as possible, the access data into an artifactory in lieu of a true access export.
+https://jfrog.com/knowledge-base/how-to-import-access-data/
+
+It requires:
+artifactory.config.xml
+security.json
+
+These can be obtained via the support bundle. However, to achieve user to group assocation, you will need to manually get the assocation.
+
+ 

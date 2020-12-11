@@ -1,6 +1,7 @@
 package access
 
 import (
+	"container/list"
 	"encoding/json"
 	"errors"
 	"io/ioutil"
@@ -17,17 +18,17 @@ type Groups struct {
 type GroupData struct {
 	GroupName       string `json:"groupName"`
 	Description     string `json:"description"`
-	NewUserDefault  string `json:"newUserDefault"`
+	NewUserDefault  bool   `json:"newUserDefault"`
 	Realm           string `json:"realm"`
-	AdminPrivileges string `json:"adminPrivileges"`
-	External        string `json:"external"`
+	AdminPrivileges bool   `json:"adminPrivileges"`
+	External        bool   `json:"external"`
 }
 type GroupImport struct {
 	Name            string `json:"name"`
 	Description     string `json:"description"`
-	AutoJoin        string `json:"autoJoin"`
+	AutoJoin        bool   `json:"autoJoin"`
 	Realm           string `json:"realm"`
-	AdminPrivileges string `json:"adminPrivileges"`
+	AdminPrivileges bool   `json:"adminPrivileges"`
 }
 
 type UserImport struct {
@@ -62,7 +63,7 @@ type RepoPermissionsAces struct {
 	Mask                    int      `json:"mask"`
 	PermissionsAsString     []string `json:"permissionsAsString"`
 	PermissionsDisplayNames []string `json:"permissionsDisplayNames"`
-	PermissionsUiNames      string   `json:"permissionsUiNames"`
+	PermissionsUiNames      []string `json:"permissionsUiNames"`
 }
 
 type RepoPermissionImport struct {
@@ -97,7 +98,7 @@ type BuildPermissionsAces struct {
 	Mask                    int      `json:"mask"`
 	PermissionsAsString     []string `json:"permissionsAsString"`
 	PermissionsDisplayNames []string `json:"permissionsDisplayNames"`
-	PermissionsUiNames      string   `json:"permissionsUiNames"`
+	PermissionsUiNames      []string `json:"permissionsUiNames"`
 }
 
 type BuildPermissionImport struct {
@@ -108,57 +109,120 @@ type BuildPermissionImport struct {
 	AdminPrivileges string `json:"adminPrivileges"`
 }
 
-type ListTypes struct {
-	Group           GroupImport
-	User            UserImport
-	RepoPermission  RepoPermissionImport
-	BuildPermission BuildPermissionImport
-	accessType      string
+type CreateUsersFromGroupsJSON struct {
+	Groups []CreateUsersFromGroupsDataJSON `json:"groups"`
 }
 
-func ReadSecurityJSON(path string) error {
+type CreateUsersFromGroupsDataJSON struct {
+	Name            string   `json:"name"`
+	Description     string   `json:"description"`
+	AutoJoin        bool     `json:"autoJoin"`
+	Realm           string   `json:"realm"`
+	AdminPrivileges bool     `json:"adminPrivileges"`
+	UserNames       []string `json:"userNames"`
+}
+
+type ListTypes struct {
+	Group                GroupImport
+	User                 UserImport
+	RepoPermission       RepoPermissionImport
+	BuildPermission      BuildPermissionImport
+	AccessType           string
+	groupIndex           string
+	repoPermissionIndex  string
+	buildPermissionIndex string
+	userIndex            string
+}
+
+func ReadSecurityJSON(workQueue *list.List, securityJSONPath string, groupsWithUsersListJSONPath string, groupsWithUsersList bool) error {
 
 	//TODO: this reads whole file into memory, be wary of OOM
-	data, err := ioutil.ReadFile(path)
+	log.Info("reading security json")
+	data, err := ioutil.ReadFile(securityJSONPath)
 	if err != nil {
-		return errors.New("Error reading security json" + err.Error() + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+		log.Error("Error reading security json" + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+		return errors.New("Error reading security json" + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 	}
-	ReadGroups(data)
+	ReadGroups(workQueue, data)
 	ReadRepoPermissionAcls(data)
 	ReadBuildPermissionAcls(data)
+
+	if groupsWithUsersList {
+		data2, err := ioutil.ReadFile(groupsWithUsersListJSONPath)
+		if err != nil {
+			log.Error("Error reading groups with users list json: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+			return errors.New("Error reading groups with users list json: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+		}
+		CreateUsersFromGroups(data2)
+	}
 
 	return nil
 }
 
-func ReadGroups(data []byte) {
+func ReadGroups(workQueue *list.List, data []byte) error {
 	var result Groups
-	json.Unmarshal(data, &result)
+	err := json.Unmarshal(data, &result)
+	if err != nil {
+		log.Error("Error reading groups: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+		return err
+	}
 	log.Info("reading groups")
 	log.Info("Number of groups:", len(result.Groups))
 
-	// for i := range result.Groups {
-	// 	fmt.Println(result.Groups[i].GroupName)
-	// }
+	for i := range result.Groups {
+		var data ListTypes
+		data.AccessType = "group"
+		var groupData GroupImport
+		groupData.Name = result.Groups[i].GroupName
+		groupData.Description = result.Groups[i].Description
+		groupData.AutoJoin = result.Groups[i].NewUserDefault
+		groupData.Realm = result.Groups[i].Realm
+		groupData.AdminPrivileges = result.Groups[i].AdminPrivileges
+		data.Group = groupData
+		workQueue.PushBack(data)
+	}
 
 	//curl localhost:8081/artifactory/api/security/groups/$name -XPUT -H "content-type: application/json" -u admin:password
 	//-d '{"name":"'$name'","description":"'$description'","autoJoin":'$newUserDefault',"realm":"'$realm'","adminPrivileges":'$adminPrivileges'}'
+	return nil
 }
 
-func ReadRepoPermissionAcls(data []byte) {
+func ReadRepoPermissionAcls(data []byte) error {
 	var result RepoPermissions
-	json.Unmarshal(data, &result)
+	err := json.Unmarshal(data, &result)
+	if err != nil {
+		log.Error("Error reading repo permissions: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+		return err
+	}
 	log.Info("reading repo permissions")
 	log.Info("Number of Aces:", len(result.RepoAcls))
 
 	// for i := range result.RepoAcls {
 	// 	fmt.Println(result.RepoAcls[i].PermissionTarget.Name)
 	// }
+	return nil
 }
 
-func ReadBuildPermissionAcls(data []byte) {
+func ReadBuildPermissionAcls(data []byte) error {
 	var result BuildPermissions
-	json.Unmarshal(data, &result)
+	err := json.Unmarshal(data, &result)
+	if err != nil {
+		log.Error("Error reading build permissions: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+		return err
+	}
 	log.Info("reading repo permissions")
 	log.Info("Number of Aces:", len(result.BuildAcls))
+	return nil
+}
 
+func CreateUsersFromGroups(data []byte) error {
+	var result CreateUsersFromGroupsJSON
+	err := json.Unmarshal(data, &result)
+	if err != nil {
+		log.Warn("Error reading users from group: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+		//return err
+	}
+	log.Info("reading user list from groups")
+	log.Info("Number of Users:", len(result.Groups))
+	return nil
 }

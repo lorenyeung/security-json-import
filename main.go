@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"container/list"
 	"encoding/json"
-	"go-pkgdl/debian"
+	"fmt"
 	"math/rand"
 	"net/http"
 	_ "net/http/pprof"
@@ -13,6 +13,7 @@ import (
 	"security-json-import/access"
 	"security-json-import/auth"
 	"security-json-import/helpers"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -100,10 +101,17 @@ func main() {
 	creds.Apikey = flags.ApikeyVar
 	creds.URL = flags.URLVar
 
-	access.ReadSecurityJSON("/Users/loreny/security-json-convert/security.json")
-	os.Exit(1)
 	//case switch for different access types
 	workQueue := list.New()
+
+	//hardcode now
+	go func() {
+		err = access.ReadSecurityJSON(workQueue, "/Users/loreny/security-json-convert/security.json", "/Users/loreny/security-json-convert/user-group-association.json", true)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	}()
 
 	//build the list here
 	// go func() {
@@ -141,15 +149,19 @@ func main() {
 					creds.Username = credsFileHash[randCredIndex][0]
 					creds.Apikey = credsFileHash[randCredIndex][1]
 				}
-				var repotype, pkgRepoDlFolder string
 
-				switch repotype {
+				//get data
+				requestData := s.(access.ListTypes)
+				switch requestData.AccessType {
 
-				case "debian":
-					md := s.(debian.Metadata)
-					standardDownload(creds, md.URL, md.File, configPath, pkgRepoDlFolder, flags.RepoVar)
-					auth.GetRestAPI("PUT", true, creds.URL+"/api/storage/"+flags.RepoVar+"-cache"+md.URL+"?properties=deb.component="+md.Component+";deb.architecture="+md.Architecture+";deb.distribution="+md.Distribution, creds.Username, creds.Apikey, "", nil, 1)
-
+				case "group":
+					md := requestData.Group
+					log.Info("worker ", i, " is working on ", md.Name)
+					groupData, err := json.Marshal(md)
+					if err != nil {
+						log.Error("Error reading groups: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+					}
+					auth.GetRestAPI("PUT", true, creds.URL+"/api/security/groups/"+md.Name, creds.Username, creds.Apikey, "", groupData, map[string]string{"Content-Type": "application/json"}, 0)
 				}
 				log.Debug("worker ", i, " finished job")
 			}
@@ -180,24 +192,23 @@ func main() {
 	}
 	close(ch)
 	wg.Wait()
-
 }
 
 func standardDownload(creds auth.Creds, dlURL string, file string, configPath string, pkgRepoDlFolder string, repoVar string) {
-	_, headStatusCode, _ := auth.GetRestAPI("HEAD", true, creds.URL+"/"+repoVar+"-cache/"+dlURL, creds.Username, creds.Apikey, "", nil, 1)
+	_, headStatusCode, _ := auth.GetRestAPI("HEAD", true, creds.URL+"/"+repoVar+"-cache/"+dlURL, creds.Username, creds.Apikey, "", nil, nil, 1)
 	if headStatusCode == 200 {
 		log.Debug("skipping, got 200 on HEAD request for %s\n", creds.URL+"/"+repoVar+"-cache/"+dlURL)
 		return
 	}
 
 	log.Info("Downloading", creds.URL+"/"+repoVar+dlURL)
-	auth.GetRestAPI("GET", true, creds.URL+"/"+repoVar+dlURL, creds.Username, creds.Apikey, configPath+pkgRepoDlFolder+"/"+file, nil, 1)
+	auth.GetRestAPI("GET", true, creds.URL+"/"+repoVar+dlURL, creds.Username, creds.Apikey, configPath+pkgRepoDlFolder+"/"+file, nil, nil, 1)
 	os.Remove(configPath + pkgRepoDlFolder + "/" + file)
 }
 
 //Test if remote repository exists and is a remote
 func checkTypeAndRepoParams(creds auth.Creds, repoVar string) (string, string, string, string) {
-	repoCheckData, repoStatusCode, _ := auth.GetRestAPI("GET", true, creds.URL+"/api/repositories/"+repoVar, creds.Username, creds.Apikey, "", nil, 1)
+	repoCheckData, repoStatusCode, _ := auth.GetRestAPI("GET", true, creds.URL+"/api/repositories/"+repoVar, creds.Username, creds.Apikey, "", nil, nil, 1)
 	if repoStatusCode != 200 {
 		log.Error("Repo", repoVar, "does not exist.")
 		os.Exit(0)
