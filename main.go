@@ -9,7 +9,6 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"os/user"
 	"security-json-import/access"
 	"security-json-import/auth"
 	"security-json-import/helpers"
@@ -26,26 +25,25 @@ func main() {
 	flags := helpers.SetFlags()
 	helpers.SetLogger(flags.LogLevelVar)
 
-	usr, err := user.Current()
-	if err != nil {
-		log.Fatal(err)
-	}
-	configFolder := "/.lorenygo/pkgDownloader/"
-	configPath := usr.HomeDir + configFolder
-
-	masterKey := auth.VerifyMasterKey(configPath + "master.key")
-
-	creds := auth.GetDownloadJSON(configPath+"download.json", masterKey)
-
 	if flags.UsernameVar == "" {
-		flags.UsernameVar = creds.Username
+		log.Error("Username cannot be empty")
+		os.Exit(1)
 	}
 	if flags.ApikeyVar == "" {
-		flags.ApikeyVar = creds.Apikey
+		log.Error("API key/password cannot be empty")
+		os.Exit(1)
 	}
 	if flags.URLVar == "" {
-		flags.URLVar = creds.URL
+		log.Error("URL cannot be empty")
+		os.Exit(1)
 	}
+
+	var creds auth.Creds
+	creds.Username = flags.UsernameVar
+	creds.Apikey = flags.ApikeyVar
+	creds.URL = flags.URLVar
+
+	//use different users to create things
 	credsFilelength := 0
 	credsFileHash := make(map[int][]string)
 	if flags.CredsFileVar != "" {
@@ -69,44 +67,17 @@ func main() {
 		log.Info("choose first one first:", flags.UsernameVar)
 	}
 
-	if flags.ValuesVar == true {
-		log.Info("User: ", creds.Username, "\nURL: ", creds.URL, "\nDownload location: ", creds.DlLocation)
-		os.Exit(0)
-	}
-
-	if flags.ResetVar == true {
-		creds = auth.GenerateDownloadJSON(configPath+"download.json", true, masterKey)
-		flags.UsernameVar = creds.Username
-		flags.ApikeyVar = creds.Apikey
-		flags.URLVar = creds.URL
-	}
-
 	if !auth.VerifyAPIKey(flags.URLVar, flags.UsernameVar, flags.ApikeyVar) {
-		if creds.Username == flags.UsernameVar && creds.Apikey == flags.ApikeyVar && creds.URL == flags.URLVar {
-			log.Warn("Looks like there's an issue with your credentials file. Resetting")
-			auth.GenerateDownloadJSON(configPath+"download.json", true, masterKey)
-			creds = auth.GetDownloadJSON(configPath+"download.json", masterKey)
-			flags.UsernameVar = creds.Username
-			flags.ApikeyVar = creds.Apikey
-			flags.URLVar = creds.URL
-
-		} else {
-			log.Error("Looks like there's an issue with your custom credentials. Exiting")
-			os.Exit(1)
-		}
+		log.Error("Looks like there's an issue with your credentials. Exiting")
+		os.Exit(1)
 	}
-
-	//update custom
-	creds.Username = flags.UsernameVar
-	creds.Apikey = flags.ApikeyVar
-	creds.URL = flags.URLVar
 
 	//case switch for different access types
 	workQueue := list.New()
 
 	//hardcode now
 	go func() {
-		err = access.ReadSecurityJSON(workQueue, "/Users/loreny/security-json-convert/security.json", "/Users/loreny/security-json-convert/user-group-association.json", true)
+		err := access.ReadSecurityJSON(workQueue, "/Users/loreny/security-json-convert/security.json", "/Users/loreny/security-json-convert/user-group-association.json", true)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
@@ -156,12 +127,24 @@ func main() {
 
 				case "group":
 					md := requestData.Group
-					log.Info("worker ", i, " is working on ", md.Name)
-					groupData, err := json.Marshal(md)
-					if err != nil {
-						log.Error("Error reading groups: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+					log.Debug("worker ", i, " starting group index:", requestData.GroupIndex, " name:", md.Name)
+					if requestData.GroupIndex < flags.GroupSkipIndexVar {
+						log.Info("worker ", i, " skipping group index:", requestData.GroupIndex, " name:", md.Name)
+
+					} else {
+
+						groupData, err := json.Marshal(md)
+						if err != nil {
+							log.Error("Error reading groups: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+						}
+						data, respCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/groups/"+md.Name, creds.Username, creds.Apikey, "", groupData, map[string]string{"Content-Type": "application/json"}, 0)
+						log.Info("worker ", i, " finished group index:", requestData.GroupIndex, " name:", md.Name, " HTTP ", respCode)
+						//201 created
+						if respCode != 201 {
+
+							log.Warn("some error occured on index ", requestData.GroupIndex, ":", data)
+						}
 					}
-					auth.GetRestAPI("PUT", true, creds.URL+"/api/security/groups/"+md.Name, creds.Username, creds.Apikey, "", groupData, map[string]string{"Content-Type": "application/json"}, 0)
 				}
 				log.Debug("worker ", i, " finished job")
 			}

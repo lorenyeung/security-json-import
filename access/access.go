@@ -128,10 +128,10 @@ type ListTypes struct {
 	RepoPermission       RepoPermissionImport
 	BuildPermission      BuildPermissionImport
 	AccessType           string
-	groupIndex           string
-	repoPermissionIndex  string
-	buildPermissionIndex string
-	userIndex            string
+	GroupIndex           int
+	RepoPermissionIndex  string
+	BuildPermissionIndex string
+	UserIndex            string
 }
 
 func ReadSecurityJSON(workQueue *list.List, securityJSONPath string, groupsWithUsersListJSONPath string, groupsWithUsersList bool) error {
@@ -143,10 +143,11 @@ func ReadSecurityJSON(workQueue *list.List, securityJSONPath string, groupsWithU
 		log.Error("Error reading security json" + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 		return errors.New("Error reading security json" + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 	}
-	ReadGroups(workQueue, data)
-	ReadRepoPermissionAcls(data)
-	ReadBuildPermissionAcls(data)
 
+	//groups
+	ReadGroups(workQueue, data)
+
+	//users
 	if groupsWithUsersList {
 		data2, err := ioutil.ReadFile(groupsWithUsersListJSONPath)
 		if err != nil {
@@ -155,6 +156,10 @@ func ReadSecurityJSON(workQueue *list.List, securityJSONPath string, groupsWithU
 		}
 		CreateUsersFromGroups(data2)
 	}
+
+	//permission targets
+	ReadRepoPermissionAcls(data)
+	ReadBuildPermissionAcls(data)
 
 	return nil
 }
@@ -178,6 +183,7 @@ func ReadGroups(workQueue *list.List, data []byte) error {
 		groupData.AutoJoin = result.Groups[i].NewUserDefault
 		groupData.Realm = result.Groups[i].Realm
 		groupData.AdminPrivileges = result.Groups[i].AdminPrivileges
+		data.GroupIndex = i
 		data.Group = groupData
 		workQueue.PushBack(data)
 	}

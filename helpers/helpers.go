@@ -104,10 +104,9 @@ func PrintDownloadPercent(done chan int64, path string, total int64) {
 
 //Flags struct
 type Flags struct {
-	WorkersVar, WorkerSleepVar, DuCheckVar                             int
+	WorkersVar, WorkerSleepVar, DuCheckVar, GroupSkipIndexVar          int
 	StorageWarningVar, StorageThresholdVar                             float64
 	UsernameVar, ApikeyVar, URLVar, RepoVar, LogLevelVar, CredsFileVar string
-	ResetVar, ValuesVar, RandomVar, NpmMetadataVar                     bool
 }
 
 //LineCounter counts  how many lines are in a file
@@ -133,6 +132,7 @@ func LineCounter(r io.Reader) (int, error) {
 //SetFlags function
 func SetFlags() Flags {
 	var flags Flags
+	flag.IntVar(&flags.GroupSkipIndexVar, "groupSkipIndex", -1, "Skip import up to index")
 	flag.StringVar(&flags.LogLevelVar, "log", "INFO", "Order of Severity: TRACE, DEBUG, INFO, WARN, ERROR, FATAL, PANIC")
 	flag.IntVar(&flags.WorkersVar, "workers", 50, "Number of workers")
 	flag.IntVar(&flags.WorkerSleepVar, "workersleep", 5, "Worker sleep period in seconds")
@@ -142,9 +142,6 @@ func SetFlags() Flags {
 	flag.StringVar(&flags.UsernameVar, "user", "", "Username")
 	flag.StringVar(&flags.ApikeyVar, "apikey", "", "API key or password")
 	flag.StringVar(&flags.URLVar, "url", "", "Binary Manager URL")
-	flag.StringVar(&flags.RepoVar, "repo", "", "Download Repository")
-	flag.BoolVar(&flags.ResetVar, "reset", false, "Reset creds file")
-	flag.BoolVar(&flags.ValuesVar, "values", false, "Output values")
 	flag.StringVar(&flags.CredsFileVar, "credsfile", "", "File with creds. If there is more than one, it will pick randomly per request. Use whitespace to separate out user and password")
 	flag.Parse()
 	return flags
