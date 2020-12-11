@@ -35,7 +35,7 @@ func SetLogger(logLevelVar string) {
 	customFormatter.FullTimestamp = true
 	customFormatter.CallerPrettyfier = func(f *runtime.Frame) (string, string) {
 		repopath := strings.Split(f.File, "/")
-		function := strings.Replace(f.Function, "go-pkgdl/", "", -1)
+		function := strings.Replace(f.Function, "security-json-import/", "", -1)
 		return fmt.Sprintf("%s\t", function), fmt.Sprintf(" %s:%d\t", repopath[len(repopath)-1], f.Line)
 	}
 
@@ -104,9 +104,9 @@ func PrintDownloadPercent(done chan int64, path string, total int64) {
 
 //Flags struct
 type Flags struct {
-	WorkersVar, WorkerSleepVar, DuCheckVar, GroupSkipIndexVar          int
-	StorageWarningVar, StorageThresholdVar                             float64
-	UsernameVar, ApikeyVar, URLVar, RepoVar, LogLevelVar, CredsFileVar string
+	WorkersVar, WorkerSleepVar, DuCheckVar, GroupSkipIndexVar, UserSkipIndexVar            int
+	StorageWarningVar, StorageThresholdVar                                                 float64
+	UsernameVar, ApikeyVar, URLVar, RepoVar, LogLevelVar, CredsFileVar, UserEmailDomainVar string
 }
 
 //LineCounter counts  how many lines are in a file
@@ -132,7 +132,9 @@ func LineCounter(r io.Reader) (int, error) {
 //SetFlags function
 func SetFlags() Flags {
 	var flags Flags
-	flag.IntVar(&flags.GroupSkipIndexVar, "groupSkipIndex", -1, "Skip import up to index")
+	flag.IntVar(&flags.GroupSkipIndexVar, "groupSkipIndex", -1, "Skip import up to specified group index")
+	flag.IntVar(&flags.UserSkipIndexVar, "userSkipIndex", -1, "Skip import up to specified user index")
+	flag.StringVar(&flags.UserEmailDomainVar, "userEmailDomain", "@jfrog.com", "Your email domain if using groups with user list")
 	flag.StringVar(&flags.LogLevelVar, "log", "INFO", "Order of Severity: TRACE, DEBUG, INFO, WARN, ERROR, FATAL, PANIC")
 	flag.IntVar(&flags.WorkersVar, "workers", 50, "Number of workers")
 	flag.IntVar(&flags.WorkerSleepVar, "workersleep", 5, "Worker sleep period in seconds")

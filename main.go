@@ -38,6 +38,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	//if user name is admin, this can be problematic as it will likely exist in the import.
+	if flags.UsernameVar == "admin" || flags.UsernameVar == "access-admin" || flags.UsernameVar == "system" {
+		log.Warn("Your username ", flags.UsernameVar, " is a common user that may get overwritten. We recommend recreating a unique admin level user for this program to work correctly.")
+		os.Exit(1)
+	}
+
 	var creds auth.Creds
 	creds.Username = flags.UsernameVar
 	creds.Apikey = flags.ApikeyVar
@@ -77,7 +83,7 @@ func main() {
 
 	//hardcode now
 	go func() {
-		err := access.ReadSecurityJSON(workQueue, "/Users/loreny/security-json-convert/security.json", "/Users/loreny/security-json-convert/user-group-association.json", true)
+		err := access.ReadSecurityJSON(workQueue, "/Users/loreny/security-json-convert/security.json", "/Users/loreny/security-json-convert/user-group-association.json", true, flags)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
@@ -135,16 +141,58 @@ func main() {
 
 						groupData, err := json.Marshal(md)
 						if err != nil {
-							log.Error("Error reading groups: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+							log.Error("Error marshaling group: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+							continue
 						}
-						data, respCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/groups/"+md.Name, creds.Username, creds.Apikey, "", groupData, map[string]string{"Content-Type": "application/json"}, 0)
-						log.Info("worker ", i, " finished group index:", requestData.GroupIndex, " name:", md.Name, " HTTP ", respCode)
+						data, respGroupCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/groups/"+md.Name, creds.Username, creds.Apikey, "", groupData, map[string]string{"Content-Type": "application/json"}, 0)
+						log.Info("worker ", i, " finished creating group index:", requestData.GroupIndex, " name:", md.Name, " HTTP ", respGroupCode)
 						//201 created
-						if respCode != 201 {
-
-							log.Warn("some error occured on index ", requestData.GroupIndex, ":", data)
+						if respGroupCode != 201 {
+							log.Warn("some error occured on group index ", requestData.GroupIndex, ":", data)
 						}
 					}
+				case "userFromGroups":
+					md := requestData.User
+					log.Info("worker ", i, " starting user index:", requestData.UserIndex, " name:", md.Name)
+					if requestData.UserIndex < flags.UserSkipIndexVar {
+						log.Info("worker ", i, " skipping user index:", requestData.UserIndex, " name:", md.Name)
+					} else {
+						//check if user exists
+						data, respUserCode, _ := auth.GetRestAPI("GET", true, creds.URL+"/api/security/users/"+md.Name, creds.Username, creds.Apikey, "", nil, nil, 0)
+
+						if respUserCode == 404 {
+							log.Info("worker ", i, " did not find user ", md.Name, " creating now")
+							userData, err := json.Marshal(md)
+							if err != nil {
+								log.Error("Error marshaling user: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								continue
+							}
+							_, respUserCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/users/"+md.Name, creds.Username, creds.Apikey, "", userData, map[string]string{"Content-Type": "application/json"}, 0)
+							log.Info("worker ", i, " finished creating user index:", requestData.UserIndex, " name:", md.Name, " HTTP ", respUserCode)
+						} else if respUserCode == 200 {
+							//user exists
+							var existingUserData access.UserImport
+							err := json.Unmarshal(data, &existingUserData)
+							if err != nil {
+								log.Error("Error unmarshaling existing user: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								continue
+							}
+							combinedGroups := append(existingUserData.Groups, md.Groups...)
+							md.Groups = combinedGroups
+							userData, err := json.Marshal(md)
+							if err != nil {
+								log.Error("Error marshaling user: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								continue
+							}
+							data2, respUserCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/users/"+md.Name, creds.Username, creds.Apikey, "", userData, map[string]string{"Content-Type": "application/json"}, 0)
+							log.Info("worker ", i, " finished updating user index:", requestData.UserIndex, " name:", md.Name, " HTTP ", respUserCode)
+							if respUserCode != 201 {
+								log.Warn("some error occured on user index ", requestData.UserIndex, ":", data2)
+							}
+
+						}
+					}
+
 				}
 				log.Debug("worker ", i, " finished job")
 			}

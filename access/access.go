@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"security-json-import/helpers"
 	"strconv"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -32,11 +33,16 @@ type GroupImport struct {
 }
 
 type UserImport struct {
-	Name            string `json:"name"`
-	Description     string `json:"description"`
-	AutoJoin        string `json:"autoJoin"`
-	Realm           string `json:"realm"`
-	AdminPrivileges string `json:"adminPrivileges"`
+	Name                     string   `json:"name"`
+	Email                    string   `json:"email"`
+	Password                 string   `json:"password"`
+	Admin                    bool     `json:"admin"`
+	ProfileUpdatable         bool     `json:"profileUpdatable"`
+	DisableUIAccess          bool     `json:"disableUIAccess"`
+	InternalPasswordDisabled bool     `json:"internalPasswordDisabled"`
+	Groups                   []string `json:"groups"`
+	WatchManager             bool     `json:"watchManager"`
+	PolicyManager            bool     `json:"policyManager"`
 }
 
 type RepoPermissions struct {
@@ -129,12 +135,12 @@ type ListTypes struct {
 	BuildPermission      BuildPermissionImport
 	AccessType           string
 	GroupIndex           int
-	RepoPermissionIndex  string
-	BuildPermissionIndex string
-	UserIndex            string
+	RepoPermissionIndex  int
+	BuildPermissionIndex int
+	UserIndex            int
 }
 
-func ReadSecurityJSON(workQueue *list.List, securityJSONPath string, groupsWithUsersListJSONPath string, groupsWithUsersList bool) error {
+func ReadSecurityJSON(workQueue *list.List, securityJSONPath string, groupsWithUsersListJSONPath string, groupsWithUsersList bool, flags helpers.Flags) error {
 
 	//TODO: this reads whole file into memory, be wary of OOM
 	log.Info("reading security json")
@@ -148,13 +154,17 @@ func ReadSecurityJSON(workQueue *list.List, securityJSONPath string, groupsWithU
 	ReadGroups(workQueue, data)
 
 	//users
+	if !strings.Contains(flags.UserEmailDomainVar, "@") {
+		log.Warn("preppending @ for email")
+		flags.UserEmailDomainVar = "@" + flags.UserEmailDomainVar
+	}
 	if groupsWithUsersList {
 		data2, err := ioutil.ReadFile(groupsWithUsersListJSONPath)
 		if err != nil {
 			log.Error("Error reading groups with users list json: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 			return errors.New("Error reading groups with users list json: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 		}
-		CreateUsersFromGroups(data2)
+		CreateUsersFromGroups(workQueue, data2, flags.UserEmailDomainVar)
 	}
 
 	//permission targets
@@ -221,7 +231,7 @@ func ReadBuildPermissionAcls(data []byte) error {
 	return nil
 }
 
-func CreateUsersFromGroups(data []byte) error {
+func CreateUsersFromGroups(workQueue *list.List, data []byte, UserEmailDomain string) error {
 	var result CreateUsersFromGroupsJSON
 	err := json.Unmarshal(data, &result)
 	if err != nil {
@@ -230,5 +240,24 @@ func CreateUsersFromGroups(data []byte) error {
 	}
 	log.Info("reading user list from groups")
 	log.Info("Number of Users:", len(result.Groups))
+
+	userCount := 0
+	for i := range result.Groups {
+		for j := range result.Groups[i].UserNames {
+			var data ListTypes
+			data.AccessType = "userFromGroups"
+			var userData UserImport
+			userData.Name = result.Groups[i].UserNames[j]
+			userData.Email = result.Groups[i].UserNames[j] + UserEmailDomain
+			userData.Password = "password"
+			userData.ProfileUpdatable = true
+			userData.Groups = []string{result.Groups[i].Name}
+			data.UserIndex = userCount
+			data.User = userData
+			workQueue.PushBack(data)
+			userCount++
+		}
+	}
+
 	return nil
 }
