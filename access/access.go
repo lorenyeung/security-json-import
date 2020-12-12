@@ -118,6 +118,21 @@ type CreateUsersFromGroupsDataJSON struct {
 	UserNames       []string `json:"userNames"`
 }
 
+type CreateUsersWithGroupsJSON struct {
+	Users []CreateUsersWithGroupsDataJSON `json:"users"`
+}
+
+type CreateUsersWithGroupsDataJSON struct {
+	Name                     string   `json:"name"`
+	Email                    string   `json:"email"`
+	Admin                    bool     `json:"admin"`
+	ProfileUpdatable         bool     `json:"profileUpdatable"`
+	DisableUIAccess          bool     `json:"disableUIAccess"`
+	InternalPasswordDisabled bool     `json:"internalPasswordDisabled"`
+	Groups                   []string `json:"groups"`
+	OfflineMode              bool     `json:"offlineMode"`
+}
+
 type ListTypes struct {
 	Group                GroupImport
 	User                 UserImport
@@ -130,11 +145,11 @@ type ListTypes struct {
 	UserIndex            int
 }
 
-func ReadSecurityJSON(workQueue *list.List, securityJSONPath string, groupsWithUsersListJSONPath string, groupsWithUsersList bool, flags helpers.Flags) error {
+func ReadSecurityJSON(workQueue *list.List, flags helpers.Flags) error {
 
 	//TODO: this reads whole file into memory, be wary of OOM
 	log.Info("reading security json")
-	data, err := ioutil.ReadFile(securityJSONPath)
+	data, err := ioutil.ReadFile(flags.SecurityJSONFileVar)
 	if err != nil {
 		log.Error("Error reading security json" + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 		return errors.New("Error reading security json" + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
@@ -151,14 +166,16 @@ func ReadSecurityJSON(workQueue *list.List, securityJSONPath string, groupsWithU
 			log.Warn("missing @ for email field, preppending @")
 			flags.UserEmailDomainVar = "@" + flags.UserEmailDomainVar
 		}
-		if flags.groupsWithUsersList {
+		data2, err := ioutil.ReadFile(flags.UserGroupAssocationFileVar)
+		if err != nil {
+			log.Error("Error reading groups with users list json: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+			return errors.New("Error reading groups with users list json: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+		}
+		if flags.GroupsWithUsersVar {
 			//TODO check if art > 6.13.0 or not
-			data2, err := ioutil.ReadFile(groupsWithUsersListJSONPath)
-			if err != nil {
-				log.Error("Error reading groups with users list json: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
-				return errors.New("Error reading groups with users list json: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
-			}
 			CreateUsersFromGroups(workQueue, data2, flags.UserEmailDomainVar)
+		} else if flags.UsersWithGroupsVar {
+			CreateUsersWithGroups(workQueue, data2, flags.UserEmailDomainVar)
 		}
 	}
 
@@ -177,7 +194,7 @@ func ReadGroups(workQueue *list.List, data []byte) error {
 		log.Error("Error reading groups: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 		return err
 	}
-	log.Info("reading groups")
+	log.Info("Reading groups")
 	log.Info("Number of groups:", len(result.Groups))
 
 	for i := range result.Groups {
@@ -203,7 +220,7 @@ func ReadRepoPermissionAcls(workQueue *list.List, data []byte) error {
 		log.Error("Error reading repo permissions: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 		return err
 	}
-	log.Info("reading repo permissions")
+	log.Info("Reading repo permissions")
 	log.Info("Number of Aces:", len(repoPermissionData.RepoAcls))
 	CreatePermissionQueueObject(workQueue, repoPermissionData.RepoAcls)
 	return nil
@@ -216,7 +233,7 @@ func ReadBuildPermissionAcls(workQueue *list.List, data []byte) error {
 		log.Error("Error reading build permissions: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 		return err
 	}
-	log.Info("reading build permissions")
+	log.Info("Reading build permissions")
 	log.Info("Number of Aces:", len(result.BuildAcls))
 	CreatePermissionQueueObject(workQueue, result.BuildAcls)
 	return nil
@@ -259,17 +276,21 @@ func CreateUsersFromGroups(workQueue *list.List, data []byte, UserEmailDomain st
 		log.Warn("Error reading users from group: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 		//return err
 	}
-	log.Info("reading user list from groups")
+	log.Info("Reading user list from groups")
 	log.Info("Number of Users:", len(result.Groups))
 
 	userCount := 0
 	for i := range result.Groups {
 		for j := range result.Groups[i].UserNames {
 			var data ListTypes
-			data.AccessType = "userFromGroups"
+			data.AccessType = "user"
 			var userData UserImport
 			userData.Name = result.Groups[i].UserNames[j]
-			userData.Email = result.Groups[i].UserNames[j] + UserEmailDomain
+			if strings.Contains(userData.Name, "@") {
+				userData.Email = result.Groups[i].UserNames[j]
+			} else {
+				userData.Email = result.Groups[i].UserNames[j] + UserEmailDomain
+			}
 			userData.Password = "password"
 			userData.ProfileUpdatable = true
 			userData.Groups = []string{result.Groups[i].Name}
@@ -279,6 +300,36 @@ func CreateUsersFromGroups(workQueue *list.List, data []byte, UserEmailDomain st
 			userCount++
 		}
 	}
+	return nil
+}
 
+func CreateUsersWithGroups(workQueue *list.List, data []byte, UserEmailDomain string) error {
+	var result CreateUsersWithGroupsJSON
+	err := json.Unmarshal(data, &result)
+	if err != nil {
+		log.Warn("Error reading users from group: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+		//return err
+	}
+	log.Info("Reading user list with groups")
+	log.Info("Number of Users:", len(result.Users))
+
+	for i := range result.Users {
+		var data ListTypes
+		data.AccessType = "user"
+		var userData UserImport
+		userData.Name = result.Users[i].Name
+		userData.Email = result.Users[i].Email
+		userData.Password = "password"
+		userData.ProfileUpdatable = true
+		userData.Groups = result.Users[i].Groups
+		userData.DisableUIAccess = result.Users[i].DisableUIAccess
+		userData.Admin = result.Users[i].Admin
+		userData.InternalPasswordDisabled = result.Users[i].InternalPasswordDisabled
+		userData.ProfileUpdatable = result.Users[i].ProfileUpdatable
+		data.UserIndex = i
+		data.User = userData
+		workQueue.PushBack(data)
+
+	}
 	return nil
 }

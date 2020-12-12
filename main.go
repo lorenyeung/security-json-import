@@ -25,19 +25,22 @@ func main() {
 	flags := helpers.SetFlags()
 	helpers.SetLogger(flags.LogLevelVar)
 
-	if flags.UsernameVar == "" {
-		log.Error("Username cannot be empty")
-		os.Exit(1)
-	}
-	if flags.ApikeyVar == "" {
-		log.Error("API key/password cannot be empty")
-		os.Exit(1)
-	}
-	if flags.URLVar == "" {
-		log.Error("URL cannot be empty")
-		os.Exit(1)
-	}
+	stringFlags := map[string]string{"-user": flags.UsernameVar, "-apikey": flags.ApikeyVar, "-url": flags.URLVar, "-securityJSONFile": flags.SecurityJSONFileVar, "-userGroupAssocationFile": flags.UserGroupAssocationFileVar}
 
+	var missing bool = false
+	for i := range stringFlags {
+		if stringFlags[i] == "" {
+			log.Error(i + " cannot be empty")
+			missing = true
+		}
+	}
+	if (flags.UsersWithGroupsVar == false && flags.GroupsWithUsersVar == false) || (flags.UsersWithGroupsVar == true && flags.GroupsWithUsersVar == true) {
+		log.Error("When selecting user import source, please only pick one: -usersWithGroups or -groupsWithUsers")
+		missing = true
+	}
+	if missing {
+		os.Exit(1)
+	}
 	//if user name is admin, this can be problematic as it will likely exist in the import.
 	if flags.UsernameVar == "admin" || flags.UsernameVar == "access-admin" || flags.UsernameVar == "system" {
 		log.Warn("Your username ", flags.UsernameVar, " is a common user that may get overwritten. We recommend recreating a unique admin level user for this program to work correctly.")
@@ -83,7 +86,7 @@ func main() {
 
 	//hardcode for now
 	go func() {
-		err := access.ReadSecurityJSON(workQueue, "/Users/loreny/security-json-convert/security.json", "/Users/loreny/security-json-convert/user-group-association.json", true, flags)
+		err := access.ReadSecurityJSON(workQueue, flags)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
@@ -164,7 +167,7 @@ func main() {
 							log.Warn("some error occured on group index ", requestData.GroupIndex, ":", string(data))
 						}
 					}
-				case "userFromGroups":
+				case "user":
 					md := requestData.User
 					log.Info("worker ", i, " starting user index:", requestData.UserIndex, " name:", md.Name)
 					if requestData.UserIndex < flags.UserSkipIndexVar {
