@@ -3,7 +3,7 @@
 art=http://localhost:8081/artifactory
 user=admin
 pass=password
-file=userList.json
+file=usersWithGroups.json
 
 users=($(curl $art/api/security/users -u $user:$pass | jq -r '.[] | .name'))
 echo "{ \"users\": [" > $file

@@ -1,14 +1,10 @@
 package helpers
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
-	"io"
-	"os"
 	"runtime"
 	"strings"
-	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -70,64 +66,11 @@ func Trace() TraceData {
 	return trace
 }
 
-//PrintDownloadPercent self explanatory
-func PrintDownloadPercent(done chan int64, path string, total int64) {
-	var stop = false
-	if total == -1 {
-		log.Warn("-1 Content length, can't load download bar, will download silently")
-		return
-	}
-	for {
-		select {
-		case <-done:
-			stop = true
-		default:
-			file, err := os.Open(path)
-			Check(err, true, "Opening file path", Trace())
-			fi, err := file.Stat()
-			Check(err, true, "Getting file statistics", Trace())
-			size := fi.Size()
-			if size == 0 {
-				size = 1
-			}
-			var percent = float64(size) / float64(total) * 100
-			if percent != 100 {
-				fmt.Printf("\r%.0f%% %s", percent, path)
-			}
-		}
-		if stop {
-			break
-		}
-		time.Sleep(time.Second)
-	}
-}
-
 //Flags struct
 type Flags struct {
-	WorkersVar, WorkerSleepVar, DuCheckVar, GroupSkipIndexVar, UserSkipIndexVar, PermissionSkipIndexVar                                     int
-	StorageWarningVar, StorageThresholdVar                                                                                                  float64
+	WorkersVar, WorkerSleepVar, SkipGroupIndexVar, SkipUserIndexVar, SkipPermissionIndexVar                                                 int
 	UsernameVar, ApikeyVar, URLVar, RepoVar, LogLevelVar, CredsFileVar, UserEmailDomainVar, UserGroupAssocationFileVar, SecurityJSONFileVar string
-	SkipUserImportVar, SkipGroupImportVar, SkipPermissionImportVar, UsersWithGroupsVar, GroupsWithUsersVar                                  bool
-}
-
-//LineCounter counts  how many lines are in a file
-func LineCounter(r io.Reader) (int, error) {
-	buf := make([]byte, 32*1024)
-	count := 0
-	lineSep := []byte{'\n'}
-
-	for {
-		c, err := r.Read(buf)
-		count += bytes.Count(buf[:c], lineSep)
-
-		switch {
-		case err == io.EOF:
-			return count, nil
-
-		case err != nil:
-			return count, err
-		}
-	}
+	SkipUserImportVar, SkipGroupImportVar, SkipPermissionImportVar, UsersWithGroupsVar, UsersFromGroupsVar                                  bool
 }
 
 //SetFlags function
@@ -135,32 +78,29 @@ func SetFlags() Flags {
 	var flags Flags
 	//mandatory flags
 	flag.BoolVar(&flags.UsersWithGroupsVar, "usersWithGroups", false, "Import users via users with group list")
-	flag.BoolVar(&flags.GroupsWithUsersVar, "groupsWithUsers", false, "Import users via group with users list")
-	flag.StringVar(&flags.UserGroupAssocationFileVar, "userGroupAssocationFile", "", "File from with the output of either getGroupsWithUsers.sh or getUsersWithGroups.sh")
+	flag.BoolVar(&flags.UsersFromGroupsVar, "usersFromGroups", false, "Import users via group with users list")
+	flag.StringVar(&flags.UserGroupAssocationFileVar, "userGroupAssocationFile", "", "File from with the output of either getUsersFromGroups.sh or getUsersWithGroups.sh")
 	flag.StringVar(&flags.SecurityJSONFileVar, "securityJSONFile", "", "Security JSON file from Artifactory Support Bundle")
 	flag.StringVar(&flags.UsernameVar, "user", "", "Username")
 	flag.StringVar(&flags.ApikeyVar, "apikey", "", "API key or password")
 	flag.StringVar(&flags.URLVar, "url", "", "Binary Manager URL")
 
 	//skip flags
-	flag.BoolVar(&flags.SkipUserImportVar, "skipUserImport", false, "Skip user import entirely")
-	flag.BoolVar(&flags.SkipPermissionImportVar, "skipPermissionImport", false, "Skip permission import entirely")
 	flag.BoolVar(&flags.SkipGroupImportVar, "skipGroupImport", false, "Skip group import entirely")
-	flag.IntVar(&flags.PermissionSkipIndexVar, "permissionSkipIndex", -1, "Skip import up to specified permission index")
-	flag.IntVar(&flags.GroupSkipIndexVar, "groupSkipIndex", -1, "Skip import up to specified group index")
-	flag.IntVar(&flags.UserSkipIndexVar, "userSkipIndex", -1, "Skip import up to specified user index")
+	flag.BoolVar(&flags.SkipPermissionImportVar, "skipPermissionImport", false, "Skip permission import entirely")
+	flag.BoolVar(&flags.SkipUserImportVar, "skipUserImport", false, "Skip user import entirely")
+	flag.IntVar(&flags.SkipGroupIndexVar, "skipGroupIndex", -1, "Skip import up to specified group index")
+	flag.IntVar(&flags.SkipPermissionIndexVar, "skipPermissionIndex", -1, "Skip import up to specified permission index")
+	flag.IntVar(&flags.SkipUserIndexVar, "skipUserIndex", -1, "Skip import up to specified user index")
 
 	//customise flags
 	flag.StringVar(&flags.UserEmailDomainVar, "userEmailDomain", "@jfrog.com", "Your email domain if using groups with user list")
-	flag.StringVar(&flags.CredsFileVar, "credsfile", "", "File with creds. If there is more than one, it will pick randomly per request. Use whitespace to separate out user and password")
+	flag.StringVar(&flags.CredsFileVar, "credsFile", "", "File with creds. If there is more than one, it will pick randomly per request. Use whitespace to separate out user and password")
 
 	//config flags
 	flag.StringVar(&flags.LogLevelVar, "log", "INFO", "Order of Severity: TRACE, DEBUG, INFO, WARN, ERROR, FATAL, PANIC")
 	flag.IntVar(&flags.WorkersVar, "workers", 50, "Number of workers")
-	flag.IntVar(&flags.WorkerSleepVar, "workersleep", 5, "Worker sleep period in seconds")
-	flag.IntVar(&flags.DuCheckVar, "ducheck", 5, "Disk Usage check in minutes")
-	flag.Float64Var(&flags.StorageWarningVar, "duwarn", 70, "Set Disk usage warning in %")
-	flag.Float64Var(&flags.StorageThresholdVar, "duthreshold", 85, "Set Disk usage threshold in %")
+	flag.IntVar(&flags.WorkerSleepVar, "workerSleep", 5, "Worker sleep period in seconds")
 
 	flag.Parse()
 	return flags

@@ -21,11 +21,12 @@ import (
 )
 
 func main() {
+	startTime := time.Now()
 
 	flags := helpers.SetFlags()
 	helpers.SetLogger(flags.LogLevelVar)
 
-	stringFlags := map[string]string{"-user": flags.UsernameVar, "-apikey": flags.ApikeyVar, "-url": flags.URLVar, "-securityJSONFile": flags.SecurityJSONFileVar, "-userGroupAssocationFile": flags.UserGroupAssocationFileVar}
+	stringFlags := map[string]string{"-user": flags.UsernameVar, "-apikey": flags.ApikeyVar, "-url": flags.URLVar, "-securityJSONFile": flags.SecurityJSONFileVar}
 
 	var missing bool = false
 	for i := range stringFlags {
@@ -34,17 +35,23 @@ func main() {
 			missing = true
 		}
 	}
-	if (flags.UsersWithGroupsVar == false && flags.GroupsWithUsersVar == false) || (flags.UsersWithGroupsVar == true && flags.GroupsWithUsersVar == true) {
-		log.Error("When selecting user import source, please only pick one: -usersWithGroups or -groupsWithUsers")
-		missing = true
+	if !flags.SkipUserImportVar {
+		if (flags.UsersWithGroupsVar == false && flags.UsersFromGroupsVar == false) || (flags.UsersWithGroupsVar == true && flags.UsersFromGroupsVar == true) {
+			log.Error("When selecting user import source, please only pick one: -usersWithGroups or -usersFromGroups")
+			missing = true
+		}
+		if flags.UserGroupAssocationFileVar == "" {
+			log.Error("-userGroupAssocationFile cannot be empty")
+			missing = true
+		}
 	}
 	if missing {
-		os.Exit(1)
+		os.Exit(2)
 	}
 	//if user name is admin, this can be problematic as it will likely exist in the import.
 	if flags.UsernameVar == "admin" || flags.UsernameVar == "access-admin" || flags.UsernameVar == "system" {
 		log.Warn("Your username ", flags.UsernameVar, " is a common user that may get overwritten. We recommend recreating a unique admin level user for this program to work correctly.")
-		os.Exit(1)
+		os.Exit(2)
 	}
 
 	var creds auth.Creds
@@ -59,7 +66,7 @@ func main() {
 		credsFile, err := os.Open(flags.CredsFileVar)
 		if err != nil {
 			log.Error("Invalid creds file:", err)
-			os.Exit(0)
+			os.Exit(1)
 		}
 		defer credsFile.Close()
 		scanner := bufio.NewScanner(credsFile)
@@ -83,6 +90,8 @@ func main() {
 
 	//case switch for different access types
 	workQueue := list.New()
+	requestQueue := list.New()
+	failureQueue := list.New()
 
 	//hardcode for now
 	go func() {
@@ -90,15 +99,6 @@ func main() {
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
-		}
-	}()
-
-	//disk usage check
-	go func() {
-		for {
-			log.Debug("Running Storage summary check every ", flags.DuCheckVar, " minutes")
-			auth.StorageCheck(creds, flags.StorageWarningVar, flags.StorageThresholdVar)
-			time.Sleep(time.Duration(flags.DuCheckVar) * time.Minute)
 		}
 	}()
 
@@ -114,6 +114,7 @@ func main() {
 					log.Info("Worker being returned to queue", i)
 					wg.Done()
 				}
+
 				log.Debug("worker ", i, " starting job")
 
 				if flags.CredsFileVar != "" {
@@ -128,28 +129,11 @@ func main() {
 				//get data
 				requestData := s.(access.ListTypes)
 				switch requestData.AccessType {
-
-				case "permissionsV2":
-					md := requestData.PermissionV2
-					log.Debug("worker ", i, " starting repo perm v2 index:", requestData.RepoPermissionIndex, " name:", md.Name)
-					permissionData, err := json.Marshal(md)
-					if err != nil {
-						log.Error("Error marshaling repo perm v2: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
-						continue
-					}
-					log.Debug("worker ", i, " repo perm v2 JSON:", string(permissionData), "index ", requestData.RepoPermissionIndex)
-					data, respPermCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/v2/security/permissions/"+md.Name, creds.Username, creds.Apikey, "", permissionData, map[string]string{"Content-Type": "application/json"}, 0)
-					log.Info("worker ", i, " finished creating repo perm v2 index:", requestData.RepoPermissionIndex, " name:", md.Name, " HTTP ", respPermCode)
-					if respPermCode != 200 {
-
-						log.Warn("some error occured on repo perm v2 index ", requestData.RepoPermissionIndex, ":", string(data))
-						os.Exit(1)
-					}
-
 				case "group":
+					requestQueue.PushBack(s)
 					md := requestData.Group
 					log.Debug("worker ", i, " starting group index:", requestData.GroupIndex, " name:", md.Name)
-					if requestData.GroupIndex < flags.GroupSkipIndexVar {
+					if requestData.GroupIndex < flags.SkipGroupIndexVar {
 						log.Info("worker ", i, " skipping group index:", requestData.GroupIndex, " name:", md.Name)
 
 					} else {
@@ -165,14 +149,44 @@ func main() {
 						//201 created
 						if respGroupCode != 201 {
 							log.Warn("some error occured on group index ", requestData.GroupIndex, ":", string(data))
+							failureQueue.PushBack(requestData)
 						}
 					}
+					requestQueue.Remove(requestQueue.Front())
+				case "permissionV2":
+					requestQueue.PushBack(s)
+					md := requestData.PermissionV2
+					log.Debug("worker ", i, " starting permission v2 index:", requestData.PermissionIndex, " name:", md.Name)
+					if requestData.PermissionIndex < flags.SkipPermissionIndexVar {
+						log.Info("worker ", i, " skipping permission v2 index:", requestData.PermissionIndex, " name:", md.Name)
+					} else {
+						permissionData, err := json.Marshal(md)
+						if err != nil {
+							log.Error("Error marshaling permission v2: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+							continue
+						}
+						log.Debug("worker ", i, " permission v2 JSON:", string(permissionData), "index ", requestData.PermissionIndex)
+						data, respPermCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/v2/security/permissions/"+md.Name, creds.Username, creds.Apikey, "", permissionData, map[string]string{"Content-Type": "application/json"}, 0)
+						log.Info("worker ", i, " finished creating permission v2 index:", requestData.PermissionIndex, " name:", md.Name, " HTTP ", respPermCode)
+						if respPermCode != 200 {
+							log.Warn("some error occured on permission v2 index ", requestData.PermissionIndex, ":", string(data))
+							failureQueue.PushBack(requestData)
+						}
+					}
+					requestQueue.Remove(requestQueue.Front())
 				case "user":
+					requestQueue.PushBack(s)
 					md := requestData.User
 					log.Info("worker ", i, " starting user index:", requestData.UserIndex, " name:", md.Name)
-					if requestData.UserIndex < flags.UserSkipIndexVar {
+					if requestData.UserIndex < flags.SkipUserIndexVar {
 						log.Info("worker ", i, " skipping user index:", requestData.UserIndex, " name:", md.Name)
 					} else {
+						forbiddenNames := map[string]string{"admin": "bad", "xray": "bad", "_internal": "bad", "anonymous": "bad"}
+						if forbiddenNames[md.Name] == "bad" {
+							log.Info("worker ", i, " skipping user index:", requestData.UserIndex, " name:", md.Name, " as it is internal")
+							continue
+						}
+
 						//check if user exists
 						data, respUserCode, _ := auth.GetRestAPI("GET", true, creds.URL+"/api/security/users/"+md.Name, creds.Username, creds.Apikey, "", nil, nil, 0)
 
@@ -206,16 +220,78 @@ func main() {
 							log.Info("worker ", i, " finished updating user index:", requestData.UserIndex, " name:", md.Name, " HTTP ", respUserCode)
 							if respUserCode != 201 {
 								log.Warn("some error occured on user index ", requestData.UserIndex, ":", string(data2))
+								failureQueue.PushBack(requestData)
 							}
-
 						}
+					}
+					requestQueue.Remove(requestQueue.Front())
+				case "end":
+
+					auth.GetRestAPI("GET", true, creds.URL+"/api/system/ping", creds.Username, creds.Apikey, "", nil, nil, 0)
+					for requestQueue.Len() > 0 {
+						log.Info("End detected, waiting for last few requests to go through. Request queue size ", requestQueue.Len())
+						time.Sleep(time.Duration(flags.WorkerSleepVar) * time.Second)
+					}
+					endTime := time.Now()
+					log.Info("Completed import in ", endTime.Sub(startTime), "")
+					if failureQueue.Len() > 0 {
+						log.Warn("There were ", failureQueue.Len(), " failures. The following imports failed:")
+						for e := failureQueue.Front(); e != nil; e = e.Next() {
+							// do something with e.Value
+							value := e.Value.(access.ListTypes)
+							switch value.AccessType {
+							case "group":
+								md := value.Group
+								data, err := json.Marshal(md)
+								if err != nil {
+									log.Error("Error marshaling ", value.AccessType+": "+md.Name+" "+err.Error()+" "+helpers.Trace().Fn+":"+strconv.Itoa(helpers.Trace().Line))
+									continue
+								} else {
+									fmt.Println(value.AccessType, md.Name, "data:", string(data))
+								}
+							case "permission":
+								md := value.PermissionV2
+								data, err := json.Marshal(md)
+								if err != nil {
+									log.Error("Error marshaling ", value.AccessType+": "+md.Name+" "+err.Error()+" "+helpers.Trace().Fn+":"+strconv.Itoa(helpers.Trace().Line))
+									continue
+								} else {
+									fmt.Println(value.AccessType, md.Name, "data:", string(data))
+								}
+							case "user":
+								md := value.User
+								data, err := json.Marshal(md)
+								if err != nil {
+									log.Error("Error marshaling ", value.AccessType+": "+md.Name+" "+err.Error()+" "+helpers.Trace().Fn+":"+strconv.Itoa(helpers.Trace().Line))
+									continue
+								} else {
+									fmt.Println(value.AccessType, md.Name, "data:", string(data))
+								}
+							}
+						}
+						fmt.Println("Do you want to retry these? (y/n)")
+						if askForConfirmation() {
+							for failureQueue.Len() > 0 {
+								value := failureQueue.Front().Value.(access.ListTypes)
+								log.Info("Re-queuing ", value.AccessType, " ", value.Name)
+
+								workQueue.PushBack(value)
+								failureQueue.Remove(failureQueue.Front())
+							}
+							var endTask access.ListTypes
+							endTask.AccessType = "end"
+							workQueue.PushBack(endTask)
+						} else {
+							os.Exit(0)
+						}
+					} else {
+						os.Exit(0)
 					}
 
 				}
 				log.Debug("worker ", i, " finished job")
 			}
 		}(i)
-
 	}
 
 	//debug port
@@ -225,11 +301,11 @@ func main() {
 	for {
 		var count0 = 0
 		for workQueue.Len() == 0 {
-			log.Info(" work queue is empty, sleeping for ", flags.WorkerSleepVar, " seconds...")
+			log.Debug(" work queue is empty, sleeping for ", flags.WorkerSleepVar, " seconds...")
 			time.Sleep(time.Duration(flags.WorkerSleepVar) * time.Second)
 			count0++
 			if count0 > 10 {
-				log.Warn("Looks like nothing's getting put into the workqueue. You might want to enable -debug and take a look")
+				log.Debug("Looks like nothing's getting put into the workqueue. You might want to enable -debug and take a look")
 			}
 			if workQueue.Len() > 0 {
 				count0 = 0
@@ -241,18 +317,6 @@ func main() {
 	}
 	close(ch)
 	wg.Wait()
-}
-
-func standardDownload(creds auth.Creds, dlURL string, file string, configPath string, pkgRepoDlFolder string, repoVar string) {
-	_, headStatusCode, _ := auth.GetRestAPI("HEAD", true, creds.URL+"/"+repoVar+"-cache/"+dlURL, creds.Username, creds.Apikey, "", nil, nil, 1)
-	if headStatusCode == 200 {
-		log.Debug("skipping, got 200 on HEAD request for %s\n", creds.URL+"/"+repoVar+"-cache/"+dlURL)
-		return
-	}
-
-	log.Info("Downloading", creds.URL+"/"+repoVar+dlURL)
-	auth.GetRestAPI("GET", true, creds.URL+"/"+repoVar+dlURL, creds.Username, creds.Apikey, configPath+pkgRepoDlFolder+"/"+file, nil, nil, 1)
-	os.Remove(configPath + pkgRepoDlFolder + "/" + file)
 }
 
 //Test if remote repository exists and is a remote
@@ -276,4 +340,37 @@ func checkTypeAndRepoParams(creds auth.Creds, repoVar string) (string, string, s
 		return result["packageType"].(string), result["url"].(string), result["pyPIRegistryUrl"].(string), result["pyPIRepositorySuffix"].(string)
 	}
 	return result["packageType"].(string), result["url"].(string), "", ""
+}
+
+//https://gist.github.com/albrow/5882501
+func askForConfirmation() bool {
+	var response string
+	_, err := fmt.Scanln(&response)
+	if err != nil {
+		log.Fatal(err)
+	}
+	okayResponses := []string{"y", "Y", "yes", "Yes", "YES"}
+	nokayResponses := []string{"n", "N", "no", "No", "NO"}
+	if containsString(okayResponses, response) {
+		return true
+	} else if containsString(nokayResponses, response) {
+		return false
+	} else {
+		fmt.Println("Please type yes or no and then press enter:")
+		return askForConfirmation()
+	}
+}
+
+func posString(slice []string, element string) int {
+	for index, elem := range slice {
+		if elem == element {
+			return index
+		}
+	}
+	return -1
+}
+
+// containsString returns true iff slice contains element
+func containsString(slice []string, element string) bool {
+	return !(posString(slice, element) == -1)
 }
