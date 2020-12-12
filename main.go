@@ -81,7 +81,7 @@ func main() {
 	//case switch for different access types
 	workQueue := list.New()
 
-	//hardcode now
+	//hardcode for now
 	go func() {
 		err := access.ReadSecurityJSON(workQueue, "/Users/loreny/security-json-convert/security.json", "/Users/loreny/security-json-convert/user-group-association.json", true, flags)
 		if err != nil {
@@ -89,11 +89,6 @@ func main() {
 			os.Exit(1)
 		}
 	}()
-
-	//build the list here
-	// go func() {
-	// 	debian.GetDebianHrefs(extractedURL+"pool/", extractedURLStripped, 1, "", workQueue)
-	// }()
 
 	//disk usage check
 	go func() {
@@ -131,6 +126,23 @@ func main() {
 				requestData := s.(access.ListTypes)
 				switch requestData.AccessType {
 
+				case "permissionsV2":
+					md := requestData.PermissionV2
+					log.Debug("worker ", i, " starting repo perm v2 index:", requestData.RepoPermissionIndex, " name:", md.Name)
+					permissionData, err := json.Marshal(md)
+					if err != nil {
+						log.Error("Error marshaling repo perm v2: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+						continue
+					}
+					log.Debug("worker ", i, " repo perm v2 JSON:", string(permissionData), "index ", requestData.RepoPermissionIndex)
+					data, respPermCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/v2/security/permissions/"+md.Name, creds.Username, creds.Apikey, "", permissionData, map[string]string{"Content-Type": "application/json"}, 0)
+					log.Info("worker ", i, " finished creating repo perm v2 index:", requestData.RepoPermissionIndex, " name:", md.Name, " HTTP ", respPermCode)
+					if respPermCode != 200 {
+
+						log.Warn("some error occured on repo perm v2 index ", requestData.RepoPermissionIndex, ":", string(data))
+						os.Exit(1)
+					}
+
 				case "group":
 					md := requestData.Group
 					log.Debug("worker ", i, " starting group index:", requestData.GroupIndex, " name:", md.Name)
@@ -144,11 +156,12 @@ func main() {
 							log.Error("Error marshaling group: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 							continue
 						}
+						log.Debug("worker ", i, " group JSON:", string(groupData), " index ", requestData.GroupIndex)
 						data, respGroupCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/groups/"+md.Name, creds.Username, creds.Apikey, "", groupData, map[string]string{"Content-Type": "application/json"}, 0)
 						log.Info("worker ", i, " finished creating group index:", requestData.GroupIndex, " name:", md.Name, " HTTP ", respGroupCode)
 						//201 created
 						if respGroupCode != 201 {
-							log.Warn("some error occured on group index ", requestData.GroupIndex, ":", data)
+							log.Warn("some error occured on group index ", requestData.GroupIndex, ":", string(data))
 						}
 					}
 				case "userFromGroups":
@@ -167,6 +180,7 @@ func main() {
 								log.Error("Error marshaling user: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 								continue
 							}
+							log.Debug("worker ", i, " user JSON index ", requestData.UserIndex, ":", string(userData))
 							_, respUserCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/users/"+md.Name, creds.Username, creds.Apikey, "", userData, map[string]string{"Content-Type": "application/json"}, 0)
 							log.Info("worker ", i, " finished creating user index:", requestData.UserIndex, " name:", md.Name, " HTTP ", respUserCode)
 						} else if respUserCode == 200 {
@@ -184,10 +198,11 @@ func main() {
 								log.Error("Error marshaling user: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 								continue
 							}
+							log.Debug("worker ", i, " user JSON index ", requestData.UserIndex, ":", string(userData))
 							data2, respUserCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/users/"+md.Name, creds.Username, creds.Apikey, "", userData, map[string]string{"Content-Type": "application/json"}, 0)
 							log.Info("worker ", i, " finished updating user index:", requestData.UserIndex, " name:", md.Name, " HTTP ", respUserCode)
 							if respUserCode != 201 {
-								log.Warn("some error occured on user index ", requestData.UserIndex, ":", data2)
+								log.Warn("some error occured on user index ", requestData.UserIndex, ":", string(data2))
 							}
 
 						}
