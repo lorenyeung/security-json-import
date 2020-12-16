@@ -83,8 +83,9 @@ func main() {
 		log.Info("choose first one first:", flags.UsernameVar)
 	}
 
-	if !auth.VerifyAPIKey(flags.URLVar, flags.UsernameVar, flags.ApikeyVar) {
-		log.Error("Looks like there's an issue with your credentials. Exiting")
+	credCheck, err := auth.VerifyAPIKey(flags.URLVar, flags.UsernameVar, flags.ApikeyVar, flags)
+	if !credCheck || err != nil {
+		log.Error("Looks like there's an issue with checking your credentials. Exiting due to:", err)
 		os.Exit(1)
 	}
 
@@ -140,104 +141,210 @@ func main() {
 
 						groupData, err := json.Marshal(md)
 						if err != nil {
-							log.Error("Error marshaling group: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+							log.Error("Error marshaling group, adding to failure queue: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+							if requestQueue.Len() > 0 {
+								requestQueue.Remove(requestQueue.Front())
+							}
+							failureQueue.PushBack(requestData)
 							continue
 						}
 						log.Debug("worker ", i, " group JSON:", string(groupData), " index ", requestData.GroupIndex)
-						data, respGroupCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/groups/"+md.Name, creds.Username, creds.Apikey, "", groupData, map[string]string{"Content-Type": "application/json"}, 0)
+						data, respGroupCode, _, getErr := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/groups/"+md.Name, creds.Username, creds.Apikey, "", groupData, map[string]string{"Content-Type": "application/json"}, 0, flags, nil)
+						if getErr != nil {
+							failureQueue.PushBack(requestData)
+							if requestQueue.Len() > 0 {
+								requestQueue.Remove(requestQueue.Front())
+							}
+							log.Warn("adding to failure queue, group: " + md.Name + " " + getErr.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+							continue
+						}
 						log.Info("worker ", i, " finished creating group index:", requestData.GroupIndex, " name:", md.Name, " HTTP ", respGroupCode)
 						//201 created
 						if respGroupCode != 201 {
 							log.Warn("some error occured on group index ", requestData.GroupIndex, ":", string(data))
+							log.Warn("adding to failure queue, group: " + md.Name + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 							failureQueue.PushBack(requestData)
 						}
 					}
-					requestQueue.Remove(requestQueue.Front())
+					if requestQueue.Len() > 0 {
+						requestQueue.Remove(requestQueue.Front())
+					}
+
 				case "permissionV2":
-					requestQueue.PushBack(s)
+
 					md := requestData.PermissionV2
 					log.Debug("worker ", i, " starting permission v2 index:", requestData.PermissionIndex, " name:", md.Name)
 					if requestData.PermissionIndex < flags.SkipPermissionIndexVar {
 						log.Info("worker ", i, " skipping permission v2 index:", requestData.PermissionIndex, " name:", md.Name)
 					} else {
+						requestQueue.PushBack(s)
 						permissionData, err := json.Marshal(md)
 						if err != nil {
-							log.Error("Error marshaling permission v2: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+							log.Error("Error marshaling permission v2, adding to failure queue: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+							if requestQueue.Len() > 0 {
+								requestQueue.Remove(requestQueue.Front())
+							}
+							failureQueue.PushBack(requestData)
 							continue
 						}
 						log.Debug("worker ", i, " permission v2 JSON:", string(permissionData), "index ", requestData.PermissionIndex)
-						data, respPermCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/v2/security/permissions/"+md.Name, creds.Username, creds.Apikey, "", permissionData, map[string]string{"Content-Type": "application/json"}, 0)
+						data, respPermCode, _, getErr := auth.GetRestAPI("PUT", true, creds.URL+"/api/v2/security/permissions/"+md.Name, creds.Username, creds.Apikey, "", permissionData, map[string]string{"Content-Type": "application/json"}, 0, flags, nil)
+						if getErr != nil {
+							log.Warn("adding to failure queue, permission: " + md.Name + " " + getErr.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+							failureQueue.PushBack(requestData)
+							if requestQueue.Len() > 0 {
+								requestQueue.Remove(requestQueue.Front())
+							}
+							continue
+						}
 						log.Info("worker ", i, " finished creating permission v2 index:", requestData.PermissionIndex, " name:", md.Name, " HTTP ", respPermCode)
 						if respPermCode != 200 {
-							log.Warn("some error occured on permission v2 index ", requestData.PermissionIndex, ":", string(data))
-							failureQueue.PushBack(requestData)
+							log.Warn("worker ", i, " some error occured on permission v2 index ", requestData.PermissionIndex, ":", string(data))
+							log.Warn("worker ", i, " index ", requestData.PermissionIndex, ":", string(permissionData))
+							if strings.Contains(string(data), "Permission target request missing repositories") {
+								permissionRepoVerification(creds, flags, md, failureQueue, requestQueue, requestData, i)
+							} else if strings.Contains(string(data), "Permission target contains a reference to a non-existing repository") {
+								//repo does not exist, do not push back into workqueue unless we want to handle this logic
+							} else {
+								log.Warn("adding to failure queue, user: " + md.Name + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								failureQueue.PushBack(requestData)
+							}
+						}
+						if requestQueue.Len() > 0 {
+							requestQueue.Remove(requestQueue.Front())
 						}
 					}
-					requestQueue.Remove(requestQueue.Front())
 				case "user":
 					requestQueue.PushBack(s)
 					md := requestData.User
-					log.Info("worker ", i, " starting user index:", requestData.UserIndex, " name:", md.Name)
+					log.Debug("worker ", i, " starting user index:", requestData.UserIndex, " name:", md.Name)
 					if requestData.UserIndex < flags.SkipUserIndexVar {
 						log.Info("worker ", i, " skipping user index:", requestData.UserIndex, " name:", md.Name)
 					} else {
-						forbiddenNames := map[string]string{"admin": "bad", "xray": "bad", "_internal": "bad", "anonymous": "bad"}
+						forbiddenNames := map[string]string{"access-admin": "bad", "admin": "bad", "xray": "bad", "_internal": "bad", "anonymous": "bad"}
 						if forbiddenNames[md.Name] == "bad" {
 							log.Info("worker ", i, " skipping user index:", requestData.UserIndex, " name:", md.Name, " as it is internal")
+							if requestQueue.Len() > 0 {
+								requestQueue.Remove(requestQueue.Front())
+							}
 							continue
 						}
 
 						//check if user exists
-						data, respUserCode, _ := auth.GetRestAPI("GET", true, creds.URL+"/api/security/users/"+md.Name, creds.Username, creds.Apikey, "", nil, nil, 0)
-
+						data, respUserCode, _, getErr := auth.GetRestAPI("GET", true, creds.URL+"/api/security/users/"+md.Name, creds.Username, creds.Apikey, "", nil, nil, 0, flags, nil)
+						if getErr != nil {
+							failureQueue.PushBack(requestData)
+							log.Warn("adding to failure queue, user: " + md.Name + " " + getErr.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+							if requestQueue.Len() > 0 {
+								requestQueue.Remove(requestQueue.Front())
+							}
+							continue
+						}
 						if respUserCode == 404 {
 							log.Info("worker ", i, " did not find user ", md.Name, " creating now")
 							userData, err := json.Marshal(md)
 							if err != nil {
 								log.Error("Error marshaling user: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								log.Warn("adding to failure queue, user: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								failureQueue.PushBack(requestData)
+								if requestQueue.Len() > 0 {
+									requestQueue.Remove(requestQueue.Front())
+								}
 								continue
 							}
 							log.Debug("worker ", i, " user JSON index ", requestData.UserIndex, ":", string(userData))
-							_, respUserCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/users/"+md.Name, creds.Username, creds.Apikey, "", userData, map[string]string{"Content-Type": "application/json"}, 0)
+							data, respUserCode, _, getErr := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/users/"+md.Name, creds.Username, creds.Apikey, "", userData, map[string]string{"Content-Type": "application/json"}, 0, flags, nil)
+							if getErr != nil {
+								log.Warn("adding to failure queue, user: " + md.Name + " " + getErr.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								failureQueue.PushBack(requestData)
+								if requestQueue.Len() > 0 {
+									requestQueue.Remove(requestQueue.Front())
+								}
+								continue
+							}
 							log.Info("worker ", i, " finished creating user index:", requestData.UserIndex, " name:", md.Name, " HTTP ", respUserCode)
+							if respUserCode != 201 {
+								log.Warn("some error occured on user index ", requestData.UserIndex, ":", string(data))
+								log.Warn("adding to failure queue, user: " + md.Name + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								failureQueue.PushBack(requestData)
+							}
 						} else if respUserCode == 200 {
 							//user exists
 							var existingUserData access.UserImport
 							err := json.Unmarshal(data, &existingUserData)
 							if err != nil {
-								log.Error("Error unmarshaling existing user: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								log.Error("Error unmarshaling existing user, adding to failure queue: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								failureQueue.PushBack(requestData)
+								if requestQueue.Len() > 0 {
+									requestQueue.Remove(requestQueue.Front())
+								}
 								continue
 							}
 							combinedGroups := append(existingUserData.Groups, md.Groups...)
 							md.Groups = combinedGroups
 							userData, err := json.Marshal(md)
 							if err != nil {
-								log.Error("Error marshaling user: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								log.Error("Error marshaling user, adding to failure queue: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								if requestQueue.Len() > 0 {
+									requestQueue.Remove(requestQueue.Front())
+								}
+								failureQueue.PushBack(requestData)
 								continue
 							}
 							log.Debug("worker ", i, " user JSON index ", requestData.UserIndex, ":", string(userData))
-							data2, respUserCode, _ := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/users/"+md.Name, creds.Username, creds.Apikey, "", userData, map[string]string{"Content-Type": "application/json"}, 0)
+							data2, respUserCode, _, getErr := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/users/"+md.Name, creds.Username, creds.Apikey, "", userData, map[string]string{"Content-Type": "application/json"}, 0, flags, nil)
+							if getErr != nil {
+								log.Warn("adding to failure queue, user: " + md.Name + " " + getErr.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								failureQueue.PushBack(requestData)
+								if requestQueue.Len() > 0 {
+									requestQueue.Remove(requestQueue.Front())
+								}
+								continue
+							}
 							log.Info("worker ", i, " finished updating user index:", requestData.UserIndex, " name:", md.Name, " HTTP ", respUserCode)
 							if respUserCode != 201 {
 								log.Warn("some error occured on user index ", requestData.UserIndex, ":", string(data2))
+								log.Warn("adding to failure queue, user: " + md.Name + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 								failureQueue.PushBack(requestData)
 							}
+						} else {
+							log.Warn("some error occured on user index ", requestData.UserIndex, ":", string(data))
+							log.Warn("adding to failure queue, user: " + md.Name + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+							failureQueue.PushBack(requestData)
 						}
 					}
-					requestQueue.Remove(requestQueue.Front())
-				case "end":
+					if requestQueue.Len() > 0 {
+						requestQueue.Remove(requestQueue.Front())
+					}
 
-					auth.GetRestAPI("GET", true, creds.URL+"/api/system/ping", creds.Username, creds.Apikey, "", nil, nil, 0)
+				case "end":
+					_, _, _, getErr := auth.GetRestAPI("GET", true, creds.URL+"/api/system/ping", creds.Username, creds.Apikey, "", nil, nil, 0, flags, nil)
+					if getErr != nil {
+						//well this is awkward
+						log.Error("Something has gone wrong at the very end")
+						os.Exit(1)
+					}
+					waiting := time.Now()
 					for requestQueue.Len() > 0 {
 						log.Info("End detected, waiting for last few requests to go through. Request queue size ", requestQueue.Len())
 						time.Sleep(time.Duration(flags.WorkerSleepVar) * time.Second)
+
+						waitingSub := time.Now().Sub(waiting)
+						if waitingSub > time.Duration(60)*time.Second {
+							fmt.Println("Do you want to break manually? (y/n)")
+							if askForConfirmation() {
+								for requestQueue.Len() > 0 {
+									requestQueue.Remove(requestQueue.Front())
+								}
+							}
+						}
+
 					}
 					endTime := time.Now()
 					log.Info("Completed import in ", endTime.Sub(startTime), "")
 					if failureQueue.Len() > 0 {
 						log.Warn("There were ", failureQueue.Len(), " failures. The following imports failed:")
 						for e := failureQueue.Front(); e != nil; e = e.Next() {
-							// do something with e.Value
 							value := e.Value.(access.ListTypes)
 							switch value.AccessType {
 							case "group":
@@ -249,7 +356,7 @@ func main() {
 								} else {
 									fmt.Println(value.AccessType, md.Name, "data:", string(data))
 								}
-							case "permission":
+							case "permissionV2":
 								md := value.PermissionV2
 								data, err := json.Marshal(md)
 								if err != nil {
@@ -282,6 +389,7 @@ func main() {
 							endTask.AccessType = "end"
 							workQueue.PushBack(endTask)
 						} else {
+							log.Info("Completed import in ", endTime.Sub(startTime), "")
 							os.Exit(0)
 						}
 					} else {
@@ -320,26 +428,77 @@ func main() {
 }
 
 //Test if remote repository exists and is a remote
-func checkTypeAndRepoParams(creds auth.Creds, repoVar string) (string, string, string, string) {
-	repoCheckData, repoStatusCode, _ := auth.GetRestAPI("GET", true, creds.URL+"/api/repositories/"+repoVar, creds.Username, creds.Apikey, "", nil, nil, 1)
-	if repoStatusCode != 200 {
-		log.Error("Repo", repoVar, "does not exist.")
-		os.Exit(0)
+// func checkTypeAndRepoParams(creds auth.Creds, repoVar string) (string, string, string, string) {
+// 	repoCheckData, repoStatusCode, _ := auth.GetRestAPI("GET", true, creds.URL+"/api/repositories/"+repoVar, creds.Username, creds.Apikey, "", nil, nil, 1, flags)
+// 	if repoStatusCode != 200 {
+// 		log.Error("Repo", repoVar, "does not exist.")
+// 		os.Exit(0)
+// 	}
+// 	var result map[string]interface{}
+// 	json.Unmarshal([]byte(repoCheckData), &result)
+// 	//TODO: hard code for now, mass upload of files
+// 	if result["rclass"] == "local" && result["packageType"].(string) == "generic" {
+// 		return result["packageType"].(string), "", "", ""
+// 	} else if result["rclass"] != "remote" {
+// 		log.Error(repoVar, "is a", result["rclass"], "repository and not a remote repository.")
+// 		//maybe here.
+// 		os.Exit(0)
+// 	}
+// 	if result["packageType"].(string) == "pypi" {
+// 		return result["packageType"].(string), result["url"].(string), result["pyPIRegistryUrl"].(string), result["pyPIRepositorySuffix"].(string)
+// 	}
+// 	return result["packageType"].(string), result["url"].(string), "", ""
+// }
+
+func permissionRepoVerification(creds auth.Creds, flags helpers.Flags, md access.PermissionV2Import, failureQueue *list.List, requestQueue *list.List, requestData access.ListTypes, i int) {
+
+	//one or more repo's dont exist, attempt to fix
+	var newRepos = make([]string, 0)
+	for i := range md.Repo.Repositories {
+		_, respCheckCode, _, getErr := auth.GetRestAPI("HEAD", true, creds.URL+"/api/repositories/"+md.Repo.Repositories[i], creds.Username, creds.Apikey, "", nil, nil, 0, flags, nil)
+		if getErr != nil {
+			log.Warn("adding to failure queue, permission: " + md.Name + " " + getErr.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+			failureQueue.PushBack(requestData)
+			requestQueue.Remove(requestQueue.Front())
+			continue
+		}
+		if respCheckCode != 200 && strings.Contains(md.Repo.Repositories[i], "-cache") {
+			log.Info("worker ", i, " attempting -cache removal index:", requestData.PermissionIndex, " name:", md.Name)
+			// -cache could be issues
+			newRepos = append(newRepos, strings.TrimSuffix(md.Repo.Repositories[i], "-cache"))
+		}
+		if respCheckCode == 200 {
+			newRepos = append(newRepos, md.Repo.Repositories[i])
+		}
+		log.Info("worker ", i, " new repo list index:", requestData.PermissionIndex, " name:", md.Name, " ", newRepos)
+
 	}
-	var result map[string]interface{}
-	json.Unmarshal([]byte(repoCheckData), &result)
-	//TODO: hard code for now, mass upload of files
-	if result["rclass"] == "local" && result["packageType"].(string) == "generic" {
-		return result["packageType"].(string), "", "", ""
-	} else if result["rclass"] != "remote" {
-		log.Error(repoVar, "is a", result["rclass"], "repository and not a remote repository.")
-		//maybe here.
-		os.Exit(0)
+	md.Repo.Repositories = newRepos
+	requestData.PermissionV2.Repo.Repositories = newRepos
+	permissionData, err := json.Marshal(md)
+	if err != nil {
+		log.Error("worker ", i, " Error marshaling permission v2, adding to failure queue: "+md.Name+" "+err.Error()+" "+helpers.Trace().Fn+":"+strconv.Itoa(helpers.Trace().Line))
+		requestQueue.Remove(requestQueue.Front())
+		failureQueue.PushBack(requestData)
+		return
 	}
-	if result["packageType"].(string) == "pypi" {
-		return result["packageType"].(string), result["url"].(string), result["pyPIRegistryUrl"].(string), result["pyPIRepositorySuffix"].(string)
+	log.Debug("worker ", i, " permission v2 JSON:", string(permissionData), "index ", requestData.PermissionIndex)
+	data, respPermCode, _, getErr := auth.GetRestAPI("PUT", true, creds.URL+"/api/v2/security/permissions/"+md.Name, creds.Username, creds.Apikey, "", permissionData, map[string]string{"Content-Type": "application/json"}, 0, flags, nil)
+	if getErr != nil {
+		log.Warn("adding to failure queue, permission: " + md.Name + " " + getErr.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+		failureQueue.PushBack(requestData)
+		requestQueue.Remove(requestQueue.Front())
+		return
 	}
-	return result["packageType"].(string), result["url"].(string), "", ""
+	if respPermCode != 200 {
+		log.Warn("worker ", i, " some error occured on 2nd attempt permission v2 index ", requestData.PermissionIndex, ":", string(data))
+		log.Warn("worker ", i, " index ", requestData.PermissionIndex, ":", string(permissionData))
+		log.Warn("adding to failure queue, permission: " + md.Name + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+		failureQueue.PushBack(requestData)
+	} else if respPermCode == 200 {
+		log.Info("worker ", i, " succeeded on 2nd attempt permission v2 index ", requestData.PermissionIndex, ":", string(data))
+	}
+
 }
 
 //https://gist.github.com/albrow/5882501

@@ -36,7 +36,7 @@ func SetLogger(logLevelVar string) {
 	}
 
 	log.SetFormatter(customFormatter)
-	fmt.Println("Log level set at ", level)
+	fmt.Println("Log level set at:", level)
 }
 
 //Check logger for errors
@@ -68,7 +68,7 @@ func Trace() TraceData {
 
 //Flags struct
 type Flags struct {
-	WorkersVar, WorkerSleepVar, SkipGroupIndexVar, SkipUserIndexVar, SkipPermissionIndexVar                                                 int
+	WorkersVar, WorkerSleepVar, SkipGroupIndexVar, SkipUserIndexVar, SkipPermissionIndexVar, HTTPSleepSecondsVar, HTTPRetryMaxVar           int
 	UsernameVar, ApikeyVar, URLVar, RepoVar, LogLevelVar, CredsFileVar, UserEmailDomainVar, UserGroupAssocationFileVar, SecurityJSONFileVar string
 	SkipUserImportVar, SkipGroupImportVar, SkipPermissionImportVar, UsersWithGroupsVar, UsersFromGroupsVar                                  bool
 }
@@ -101,6 +101,8 @@ func SetFlags() Flags {
 	flag.StringVar(&flags.LogLevelVar, "log", "INFO", "Order of Severity: TRACE, DEBUG, INFO, WARN, ERROR, FATAL, PANIC")
 	flag.IntVar(&flags.WorkersVar, "workers", 50, "Number of workers")
 	flag.IntVar(&flags.WorkerSleepVar, "workerSleep", 5, "Worker sleep period in seconds")
+	flag.IntVar(&flags.HTTPSleepSecondsVar, "httpSleep", 10, "HTTP request sleep period before a retry")
+	flag.IntVar(&flags.HTTPRetryMaxVar, "retry", 5, "Retry attempt before failure")
 
 	flag.Parse()
 	return flags

@@ -2,13 +2,13 @@ package auth
 
 import (
 	"bytes"
-	"go-pkgdl/helpers"
 	"io"
 	"io/ioutil"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
+	"security-json-import/helpers"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -22,23 +22,26 @@ type Creds struct {
 }
 
 // VerifyAPIKey for errors
-func VerifyAPIKey(urlInput, userName, apiKey string) bool {
+func VerifyAPIKey(urlInput, userName, apiKey string, flags helpers.Flags) (bool, error) {
 	log.Debug("starting VerifyAPIkey request. Testing:", userName)
 	//TODO need to sanitize invalid url strings, esp in custom flag
-	data, _, _ := GetRestAPI("GET", true, urlInput+"/api/system/ping", userName, apiKey, "", nil, nil, 1)
+	data, _, _, err := GetRestAPI("GET", true, urlInput+"/api/system/ping", userName, apiKey, "", nil, nil, 1, flags, nil)
+	if err != nil {
+		return false, err
+	}
 	if string(data) == "OK" {
 		log.Debug("finished VerifyAPIkey request. Credentials are good to go.")
-		return true
+		return true, nil
 	}
 	log.Warn("Received unexpected response:", string(data), " against ", urlInput+"/api/system/ping. Double check your URL and credentials.")
-	return false
+	return false, nil
 }
 
 //GetRestAPI GET rest APIs response with error handling
-func GetRestAPI(method string, auth bool, urlInput, userName, apiKey, providedfilepath string, jsonBody []byte, header map[string]string, retry int) ([]byte, int, http.Header) {
-	if retry > 5 {
-		log.Warn("Exceeded retry limit, cancelling further attempts")
-		return nil, 0, nil
+func GetRestAPI(method string, auth bool, urlInput, userName, apiKey, providedfilepath string, jsonBody []byte, header map[string]string, retry int, flags helpers.Flags, err error) ([]byte, int, http.Header, error) {
+	if retry > flags.HTTPRetryMaxVar {
+		log.Error("Exceeded retry limit, cancelling further attempts")
+		return nil, 0, nil, err
 	}
 
 	body := new(bytes.Buffer)
@@ -62,6 +65,9 @@ func GetRestAPI(method string, auth bool, urlInput, userName, apiKey, providedfi
 
 	client := http.Client{}
 	req, err := http.NewRequest(method, urlInput, body)
+
+	//https://stackoverflow.com/questions/17714494/golang-http-request-results-in-eof-errors-when-making-multiple-requests-successi
+	req.Close = true
 	if auth {
 		req.SetBasicAuth(userName, apiKey)
 	}
@@ -75,12 +81,16 @@ func GetRestAPI(method string, auth bool, urlInput, userName, apiKey, providedfi
 	} else {
 
 		resp, err := client.Do(req)
-		helpers.Check(err, false, "The HTTP response", helpers.Trace())
-
 		if err != nil {
-			return nil, 0, nil
+			log.Warn("The HTTP request failed with error:", err)
+			time.Sleep(time.Duration(flags.HTTPSleepSecondsVar) * time.Second)
+			GetRestAPI(method, auth, urlInput, userName, apiKey, providedfilepath, jsonBody, header, retry+1, flags, err)
 		}
 		// need to account for 403s with xray, or other 403s, 429? 204 is bad too (no content for docker)
+		if resp == nil {
+			log.Error("Returning error due to nil response on request:", err)
+			return nil, 0, nil, err
+		}
 		switch resp.StatusCode {
 		case 200:
 			log.Debug("Received ", resp.StatusCode, " OK on ", method, " request for ", urlInput, " continuing")
@@ -95,19 +105,25 @@ func GetRestAPI(method string, auth bool, urlInput, userName, apiKey, providedfi
 			log.Debug("Received ", resp.StatusCode, " Not Found on ", method, " request for ", urlInput, " continuing")
 		case 429:
 			log.Error("Received ", resp.StatusCode, " Too Many Requests on ", method, " request for ", urlInput, ", sleeping then retrying, attempt ", retry)
-			time.Sleep(10 * time.Second)
-			GetRestAPI(method, auth, urlInput, userName, apiKey, providedfilepath, jsonBody, header, retry+1)
+			time.Sleep(time.Duration(flags.HTTPSleepSecondsVar) * time.Second)
+			GetRestAPI(method, auth, urlInput, userName, apiKey, providedfilepath, jsonBody, header, retry+1, flags, err)
 		case 204:
 			if method == "GET" {
 				log.Error("Received ", resp.StatusCode, " No Content on ", method, " request for ", urlInput, ", sleeping then retrying")
 				time.Sleep(10 * time.Second)
-				GetRestAPI(method, auth, urlInput, userName, apiKey, providedfilepath, jsonBody, header, retry+1)
+				GetRestAPI(method, auth, urlInput, userName, apiKey, providedfilepath, jsonBody, header, retry+1, flags, err)
 			} else {
 				log.Debug("Received ", resp.StatusCode, " OK on ", method, " request for ", urlInput, " continuing")
 			}
 		case 500:
 			log.Error("Received ", resp.StatusCode, " Internal Server error on ", method, " request for ", urlInput, " failing out")
-			return nil, 0, nil
+			return nil, resp.StatusCode, nil, err
+		case 502:
+			log.Error("Received ", resp.StatusCode, " Internal Server error on ", method, " request for ", urlInput, " failing out")
+			return nil, resp.StatusCode, nil, err
+		case 503:
+			log.Error("Received ", resp.StatusCode, " Internal Server error on ", method, " request for ", urlInput, " failing out")
+			return nil, resp.StatusCode, nil, err
 		default:
 			log.Warn("Received ", resp.StatusCode, " on ", method, " request for ", urlInput, " continuing")
 		}
@@ -125,19 +141,22 @@ func GetRestAPI(method string, auth bool, urlInput, userName, apiKey, providedfi
 			//go helpers.PrintDownloadPercent(done, filepath, int64(resp.ContentLength))
 			_, err = io.Copy(out, resp.Body)
 			helpers.Check(err, false, "The file copy:"+providedfilepath, helpers.Trace())
+
+			//return OK after copy is done
+			return nil, 0, nil, nil
 		} else {
 			//maybe skip the download or retry if error here, like EOF
 			data, err := ioutil.ReadAll(resp.Body)
 			helpers.Check(err, false, "Data read:"+urlInput, helpers.Trace())
 			if err != nil {
 				log.Warn("Data Read on ", urlInput, " failed with:", err, ", sleeping then retrying, attempt:", retry)
-				time.Sleep(10 * time.Second)
+				time.Sleep(time.Duration(flags.HTTPSleepSecondsVar) * time.Second)
 
-				GetRestAPI(method, auth, urlInput, userName, apiKey, providedfilepath, jsonBody, header, retry+1)
+				GetRestAPI(method, auth, urlInput, userName, apiKey, providedfilepath, jsonBody, header, retry+1, flags, err)
 			}
 
-			return data, statusCode, headers
+			return data, statusCode, headers, nil
 		}
 	}
-	return nil, 0, nil
+	return nil, 0, nil, err
 }

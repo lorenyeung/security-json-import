@@ -77,19 +77,23 @@ type PermissionsAces struct {
 }
 
 type PermissionV2Import struct {
-	Name string `json:"name"`
-	Repo struct {
-		IncludePatterns []string                  `json:"include-patterns"`
-		ExcludePatterns []string                  `json:"exclude-patterns"`
-		Repositories    []string                  `json:"repositories"`
-		Actions         PermissionV2ActionsImport `json:"actions,omitempty"`
-	} `json:"repo,omitempty"`
-	Build struct {
-		IncludePatterns []string                  `json:"include-patterns"`
-		ExcludePatterns []string                  `json:"exclude-patterns"`
-		Repositories    []string                  `json:"repositories"`
-		Actions         PermissionV2ActionsImport `json:"actions,omitempty"`
-	} `json:"build,omitempty"`
+	Name  string                   `json:"name"`
+	Repo  *PermissionRepoV2Import  `json:"repo,omitempty"`
+	Build *PermissionBuildV2Import `json:"build,omitempty"`
+}
+
+type PermissionBuildV2Import struct {
+	IncludePatterns []string                  `json:"include-patterns,omitempty"`
+	ExcludePatterns []string                  `json:"exclude-patterns,omitempty"`
+	Repositories    []string                  `json:"repositories"`
+	Actions         PermissionV2ActionsImport `json:"actions,omitempty"`
+}
+
+type PermissionRepoV2Import struct {
+	IncludePatterns []string                  `json:"include-patterns,omitempty"`
+	ExcludePatterns []string                  `json:"exclude-patterns,omitempty"`
+	Repositories    []string                  `json:"repositories"`
+	Actions         PermissionV2ActionsImport `json:"actions,omitempty"`
 }
 
 type PermissionV2ActionsImport struct {
@@ -247,10 +251,15 @@ func CreatePermissionQueueObject(workQueue *list.List, repoAcls []PermissionsAcl
 		var permissionData PermissionV2Import
 		var data ListTypes
 		data.AccessType = "permissionV2"
+		noSpaceName := strings.ReplaceAll(repoAcls[i].PermissionTarget.Name, " ", "%20")
 		permissionData.Name = repoAcls[i].PermissionTarget.Name
+		if permissionData.Repo == nil {
+			permissionData.Repo = &PermissionRepoV2Import{}
+		}
 		permissionData.Repo.IncludePatterns = repoAcls[i].PermissionTarget.Includes
 		permissionData.Repo.ExcludePatterns = repoAcls[i].PermissionTarget.Excludes
 		permissionData.Repo.Repositories = repoAcls[i].PermissionTarget.RepoKeys
+		//need check for "" repo list, ANY *
 		for j := range repoAcls[i].Aces {
 			//TODO verify that aces and mutableAces are the same
 			if repoAcls[i].Aces[j].Group {
@@ -266,7 +275,7 @@ func CreatePermissionQueueObject(workQueue *list.List, repoAcls []PermissionsAcl
 			}
 		}
 		data.PermissionIndex = i
-		data.Name = repoAcls[i].PermissionTarget.Name
+		data.Name = noSpaceName
 		data.PermissionV2 = permissionData
 		workQueue.PushBack(data)
 	}
