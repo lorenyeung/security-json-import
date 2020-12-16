@@ -170,6 +170,48 @@ func main() {
 						requestQueue.Remove(requestQueue.Front())
 					}
 
+				case "permission":
+					md := requestData.Permission
+					log.Debug("worker ", i, " starting permission index:", requestData.PermissionIndex, " name:", md.Name)
+					if requestData.PermissionIndex < flags.SkipPermissionIndexVar {
+						log.Info("worker ", i, " skipping permission index:", requestData.PermissionIndex, " name:", md.Name)
+					} else {
+						requestQueue.PushBack(s)
+						permissionData, err := json.Marshal(md)
+						if err != nil {
+							log.Error("Error marshaling permission, adding to failure queue: " + md.Name + " " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+							if requestQueue.Len() > 0 {
+								requestQueue.Remove(requestQueue.Front())
+							}
+							failureQueue.PushBack(requestData)
+							continue
+						}
+						log.Debug("worker ", i, " permission JSON:", string(permissionData), "index ", requestData.PermissionIndex)
+						data, respPermCode, _, getErr := auth.GetRestAPI("PUT", true, creds.URL+"/api/security/permissions/"+md.Name, creds.Username, creds.Apikey, "", permissionData, map[string]string{"Content-Type": "application/json"}, 0, flags, nil)
+						if getErr != nil {
+							log.Warn("adding to failure queue, permission: " + md.Name + " " + getErr.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+							failureQueue.PushBack(requestData)
+							if requestQueue.Len() > 0 {
+								requestQueue.Remove(requestQueue.Front())
+							}
+							continue
+						}
+						log.Info("worker ", i, " finished creating permission index:", requestData.PermissionIndex, " name:", md.Name, " HTTP ", respPermCode)
+						if respPermCode != 200 {
+							log.Warn("worker ", i, " some error occured on permission index ", requestData.PermissionIndex, ":", string(data))
+							log.Warn("worker ", i, " index ", requestData.PermissionIndex, ":", string(permissionData))
+							if strings.Contains(string(data), "Permission target contains a reference to a non-existing repository") {
+								//repo does not exist, do not push back into workqueue unless we want to handle this logic
+							} else {
+								log.Warn("adding to failure queue, user: " + md.Name + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								failureQueue.PushBack(requestData)
+							}
+						}
+						if requestQueue.Len() > 0 {
+							requestQueue.Remove(requestQueue.Front())
+						}
+					}
+
 				case "permissionV2":
 
 					md := requestData.PermissionV2

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io/ioutil"
+	"security-json-import/auth"
 	"security-json-import/helpers"
 	"strconv"
 	"strings"
 
+	"github.com/Masterminds/semver"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -76,20 +78,26 @@ type PermissionsAces struct {
 	PermissionsUiNames      []string `json:"permissionsUiNames"`
 }
 
+type PermissionImport struct {
+	Name            string                     `json:"name"`
+	IncludePatterns []string                   `json:"include-patterns,omitempty"`
+	ExcludePatterns []string                   `json:"exclude-patterns,omitempty"`
+	Repositories    []string                   `json:"repositories"`
+	Principals      PermissionPrincipalsImport `json:"principals,omitempty"`
+}
+
+type PermissionPrincipalsImport struct {
+	Users  map[string][]string `json:"users,omitempty"`
+	Groups map[string][]string `json:"groups,omitempty"`
+}
+
 type PermissionV2Import struct {
-	Name  string                   `json:"name"`
-	Repo  *PermissionRepoV2Import  `json:"repo,omitempty"`
-	Build *PermissionBuildV2Import `json:"build,omitempty"`
+	Name  string                  `json:"name"`
+	Repo  *PermissionDataV2Import `json:"repo,omitempty"`
+	Build *PermissionDataV2Import `json:"build,omitempty"`
 }
 
-type PermissionBuildV2Import struct {
-	IncludePatterns []string                  `json:"include-patterns,omitempty"`
-	ExcludePatterns []string                  `json:"exclude-patterns,omitempty"`
-	Repositories    []string                  `json:"repositories"`
-	Actions         PermissionV2ActionsImport `json:"actions,omitempty"`
-}
-
-type PermissionRepoV2Import struct {
+type PermissionDataV2Import struct {
 	IncludePatterns []string                  `json:"include-patterns,omitempty"`
 	ExcludePatterns []string                  `json:"exclude-patterns,omitempty"`
 	Repositories    []string                  `json:"repositories"`
@@ -99,14 +107,6 @@ type PermissionRepoV2Import struct {
 type PermissionV2ActionsImport struct {
 	Users  map[string][]string `json:"users,omitempty"`
 	Groups map[string][]string `json:"groups,omitempty"`
-}
-
-type PermissionImport struct {
-	Name            string `json:"name"`
-	Description     string `json:"description"`
-	AutoJoin        string `json:"autoJoin"`
-	Realm           string `json:"realm"`
-	AdminPrivileges string `json:"adminPrivileges"`
 }
 
 type CreateUsersFromGroupsJSON struct {
@@ -148,12 +148,29 @@ type ListTypes struct {
 	UserIndex       int
 	Name            string
 }
+type ArtifactoryVersion struct {
+	Version  string   `json:"version"`
+	Revision string   `json:"revision"`
+	Addons   []string `json:"addons"`
+	License  string   `json:"license"`
+}
 
 func ReadSecurityJSON(workQueue *list.List, flags helpers.Flags) error {
 
+	//get art version
+	var artVer ArtifactoryVersion
+	data, _, _, getErr := auth.GetRestAPI("GET", true, flags.URLVar+"/api/system/version", flags.UsernameVar, flags.ApikeyVar, "", nil, nil, 0, flags, nil)
+	if getErr != nil {
+		return getErr
+	}
+	err := json.Unmarshal(data, &artVer)
+	if err != nil {
+		return err
+	}
+
 	//TODO: this reads whole file into memory, be wary of OOM
 	log.Info("reading security json")
-	data, err := ioutil.ReadFile(flags.SecurityJSONFileVar)
+	data, err = ioutil.ReadFile(flags.SecurityJSONFileVar)
 	if err != nil {
 		log.Error("Error reading security json" + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 		return errors.New("Error reading security json" + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
@@ -176,7 +193,19 @@ func ReadSecurityJSON(workQueue *list.List, flags helpers.Flags) error {
 			return errors.New("Error reading groups with users list json: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 		}
 		if flags.UsersFromGroupsVar {
-			//TODO check if art > 6.13.0 or not
+			//check if art > 6.13.0 or not
+			c, err := semver.NewConstraint(">= 6.13.0")
+			if err != nil {
+				return err
+			}
+			v, err := semver.NewVersion(artVer.Version)
+			if err != nil {
+				return err
+			}
+			a := c.Check(v)
+			if !a {
+				log.Warn("The source must be atleast 6.13.0 to get Users from Groups. You're importing into ", artVer.Version, " which does not match this. Proceed with caution")
+			}
 			CreateUsersFromGroups(workQueue, data2, flags.UserEmailDomainVar)
 		} else if flags.UsersWithGroupsVar {
 			CreateUsersWithGroups(workQueue, data2)
@@ -185,8 +214,24 @@ func ReadSecurityJSON(workQueue *list.List, flags helpers.Flags) error {
 
 	//permission targets
 	if !flags.SkipPermissionImportVar {
-		ReadRepoPermissionAcls(workQueue, data)
-		ReadBuildPermissionAcls(workQueue, data)
+
+		c, err := semver.NewConstraint(">= 6.6.0")
+		if err != nil {
+			return err
+		}
+		v, err := semver.NewVersion(artVer.Version)
+		if err != nil {
+			return err
+		}
+		a := c.Check(v)
+		if !a {
+			log.Info(artVer.Version, " detected, using v1")
+			ReadPermissionAcls(workQueue, data)
+		} else {
+			log.Info(artVer.Version, " detected, using v2")
+			length, _ := ReadRepoPermissionV2Acls(workQueue, data)
+			ReadBuildPermissionV2Acls(workQueue, data, length)
+		}
 	}
 	var endTask ListTypes
 	endTask.AccessType = "end"
@@ -221,7 +266,7 @@ func ReadGroups(workQueue *list.List, data []byte) error {
 	return nil
 }
 
-func ReadRepoPermissionAcls(workQueue *list.List, data []byte) error {
+func ReadPermissionAcls(workQueue *list.List, data []byte) error {
 	var repoPermissionData RepoPermissions
 	err := json.Unmarshal(data, &repoPermissionData)
 	if err != nil {
@@ -233,50 +278,114 @@ func ReadRepoPermissionAcls(workQueue *list.List, data []byte) error {
 	return nil
 }
 
-func ReadBuildPermissionAcls(workQueue *list.List, data []byte) error {
+func ReadRepoPermissionV2Acls(workQueue *list.List, data []byte) (int, error) {
+	var repoPermissionData RepoPermissions
+	err := json.Unmarshal(data, &repoPermissionData)
+	if err != nil {
+		log.Error("Error reading repo permissions v2: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+		return 0, err
+	}
+	log.Info("Number of repo permissions v2:", len(repoPermissionData.RepoAcls))
+	CreatePermissionV2QueueObject(workQueue, repoPermissionData.RepoAcls, "repository", 0)
+	return len(repoPermissionData.RepoAcls), nil
+}
+
+func ReadBuildPermissionV2Acls(workQueue *list.List, data []byte, length int) error {
 	var result BuildPermissions
 	err := json.Unmarshal(data, &result)
 	if err != nil {
-		log.Error("Error reading build permissions: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+		log.Error("Error reading build permissions v2: " + err.Error() + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 		return err
 	}
-	log.Info("Number of build permissions:", len(result.BuildAcls))
-	CreatePermissionQueueObject(workQueue, result.BuildAcls)
+	log.Info("Number of build permissions v2:", len(result.BuildAcls))
+	//need to check if permission target already exists, and if so ammend to it.
+	CreatePermissionV2QueueObject(workQueue, result.BuildAcls, "build", length)
 	return nil
 }
 
-func CreatePermissionQueueObject(workQueue *list.List, repoAcls []PermissionsAcls) error {
-	for i := range repoAcls {
-		//check if v2 if > 6.6?
-		var permissionData PermissionV2Import
+func CreatePermissionQueueObject(workQueue *list.List, acls []PermissionsAcls) error {
+	for i := range acls {
+		var permissionImport PermissionImport
 		var data ListTypes
-		data.AccessType = "permissionV2"
-		noSpaceName := strings.ReplaceAll(repoAcls[i].PermissionTarget.Name, " ", "%20")
-		permissionData.Name = repoAcls[i].PermissionTarget.Name
-		if permissionData.Repo == nil {
-			permissionData.Repo = &PermissionRepoV2Import{}
-		}
-		permissionData.Repo.IncludePatterns = repoAcls[i].PermissionTarget.Includes
-		permissionData.Repo.ExcludePatterns = repoAcls[i].PermissionTarget.Excludes
-		permissionData.Repo.Repositories = repoAcls[i].PermissionTarget.RepoKeys
+		data.AccessType = "permission"
+		//noSpaceName := strings.ReplaceAll(acls[i].PermissionTarget.Name, " ", "%20")
+		permissionImport.IncludePatterns = acls[i].PermissionTarget.Includes
+		permissionImport.ExcludePatterns = acls[i].PermissionTarget.Excludes
+		permissionImport.Repositories = acls[i].PermissionTarget.RepoKeys
+		permissionImport.Name = acls[i].PermissionTarget.Name
 		//need check for "" repo list, ANY *
-		for j := range repoAcls[i].Aces {
+		for j := range acls[i].Aces {
 			//TODO verify that aces and mutableAces are the same
-			if repoAcls[i].Aces[j].Group {
-				if permissionData.Repo.Actions.Groups == nil {
-					permissionData.Repo.Actions.Groups = make(map[string][]string)
+			if acls[i].Aces[j].Group {
+				if permissionImport.Principals.Groups == nil {
+					permissionImport.Principals.Groups = make(map[string][]string)
 				}
-				permissionData.Repo.Actions.Groups[repoAcls[i].Aces[j].Principal] = repoAcls[i].Aces[j].PermissionsDisplayNames
+				permissionImport.Principals.Groups[acls[i].Aces[j].Principal] = acls[i].Aces[j].PermissionsAsString
 			} else {
-				if permissionData.Repo.Actions.Users == nil {
-					permissionData.Repo.Actions.Users = make(map[string][]string)
+				if permissionImport.Principals.Users == nil {
+					permissionImport.Principals.Users = make(map[string][]string)
 				}
-				permissionData.Repo.Actions.Users[repoAcls[i].Aces[j].Principal] = repoAcls[i].Aces[j].PermissionsDisplayNames
+				permissionImport.Principals.Users[acls[i].Aces[j].Principal] = acls[i].Aces[j].PermissionsAsString
 			}
 		}
 		data.PermissionIndex = i
+		data.Name = acls[i].PermissionTarget.Name
+
+		data.Permission = permissionImport
+		workQueue.PushBack(data)
+	}
+	return nil
+}
+
+func CreatePermissionV2QueueObject(workQueue *list.List, acls []PermissionsAcls, PermissionType string, length int) error {
+
+	for i := range acls {
+		//check if v2 if > 6.6?
+		var permissionImport PermissionV2Import
+		var permissionData PermissionDataV2Import
+		var data ListTypes
+		data.AccessType = "permissionV2"
+		noSpaceName := strings.ReplaceAll(acls[i].PermissionTarget.Name, " ", "%20")
+		permissionImport.Name = acls[i].PermissionTarget.Name
+		if PermissionType == "repository" {
+			if permissionImport.Repo == nil {
+				permissionImport.Repo = &PermissionDataV2Import{}
+			}
+		}
+		if PermissionType == "build" {
+			if permissionImport.Build == nil {
+				permissionImport.Build = &PermissionDataV2Import{}
+			}
+		}
+
+		permissionData.IncludePatterns = acls[i].PermissionTarget.Includes
+		permissionData.ExcludePatterns = acls[i].PermissionTarget.Excludes
+		permissionData.Repositories = acls[i].PermissionTarget.RepoKeys
+		//need check for "" repo list, ANY *
+		for j := range acls[i].Aces {
+			//TODO verify that aces and mutableAces are the same
+			if acls[i].Aces[j].Group {
+				if permissionData.Actions.Groups == nil {
+					permissionData.Actions.Groups = make(map[string][]string)
+				}
+				permissionData.Actions.Groups[acls[i].Aces[j].Principal] = acls[i].Aces[j].PermissionsDisplayNames
+			} else {
+				if permissionData.Actions.Users == nil {
+					permissionData.Actions.Users = make(map[string][]string)
+				}
+				permissionData.Actions.Users[acls[i].Aces[j].Principal] = acls[i].Aces[j].PermissionsDisplayNames
+			}
+		}
+		data.PermissionIndex = i + length
 		data.Name = noSpaceName
-		data.PermissionV2 = permissionData
+		if PermissionType == "repository" {
+			permissionImport.Repo = &permissionData
+		}
+		if PermissionType == "build" {
+			permissionImport.Build = &permissionData
+		}
+
+		data.PermissionV2 = permissionImport
 		workQueue.PushBack(data)
 	}
 	return nil
