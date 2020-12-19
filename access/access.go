@@ -155,6 +155,15 @@ type ArtifactoryVersion struct {
 	License  string   `json:"license"`
 }
 
+type ArtifactoryError struct {
+	Errors []ArtifactoryErrorDetail `json:"errors"`
+}
+
+type ArtifactoryErrorDetail struct {
+	Status  int    `json:"status"`
+	Message string `json:"message"`
+}
+
 func ReadSecurityJSON(workQueue *list.List, flags helpers.Flags) error {
 
 	//get art version

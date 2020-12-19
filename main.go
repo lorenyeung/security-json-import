@@ -245,10 +245,57 @@ func main() {
 							log.Warn("worker ", i, " index ", requestData.PermissionIndex, ":", string(permissionData))
 							if strings.Contains(string(data), "Permission target request missing repositories") {
 								permissionRepoVerification(creds, flags, md, failureQueue, requestQueue, requestData, i)
+							} else if strings.Contains(string(data), "reference to a non-existing user") {
+
+								var ArtError access.ArtifactoryError
+								err := json.Unmarshal(data, &ArtError)
+								if err != nil {
+									if requestQueue.Len() > 0 {
+										requestQueue.Remove(requestQueue.Front())
+									}
+									continue
+								}
+								if md.Repo != nil {
+									for y := range md.Repo.Actions.Users {
+										user := y
+										log.Warn("missing user:", user, "creating without context")
+										var data access.ListTypes
+										data.AccessType = "user"
+										var userData access.UserImport
+										userData.Name = user
+										userData.Email = user + flags.UserEmailDomainVar
+										userData.Password = "password"
+										userData.ProfileUpdatable = true
+										data.UserIndex = workQueue.Len() + 1
+										data.Name = user
+										data.User = userData
+										workQueue.PushBack(data)
+									}
+								} else {
+									for y := range md.Build.Actions.Users {
+										user := y
+										log.Warn("missing build user:", user, "creating without context")
+										var data access.ListTypes
+										data.AccessType = "user"
+										var userData access.UserImport
+										userData.Name = user
+										userData.Email = user + flags.UserEmailDomainVar
+										userData.Password = "password"
+										userData.ProfileUpdatable = true
+										data.UserIndex = workQueue.Len() + 1
+										data.Name = user
+										data.User = userData
+										workQueue.PushBack(data)
+									}
+
+								}
+								//push back permissions again
+								failureQueue.PushBack(requestData)
+
 							} else if strings.Contains(string(data), "Permission target contains a reference to a non-existing repository") {
 								//repo does not exist, do not push back into workqueue unless we want to handle this logic
 							} else {
-								log.Warn("adding to failure queue, user: " + md.Name + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
+								log.Warn("adding to failure queue, permission v2: " + md.Name + " " + helpers.Trace().Fn + ":" + strconv.Itoa(helpers.Trace().Line))
 								failureQueue.PushBack(requestData)
 							}
 						}
